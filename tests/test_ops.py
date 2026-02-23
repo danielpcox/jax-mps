@@ -129,7 +129,7 @@ def test_op_grad(
 
         if MPS_DEVICE is not None:
             request.applymarker(
-                pytest.mark.xfail(
+                pytest.mark.xfail(  # type: ignore[call-overload]
                     reason=op_config.grad_xfail,
                     match=op_config.grad_xfail,
                     strict=True,

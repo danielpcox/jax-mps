@@ -419,13 +419,13 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
     //   - For each batch i, gather operand[i,:] at indices[i,0]
     if (!operandBatchingDims.empty() && !startIndicesBatchingDims.empty() &&
         operandBatchingDims.size() == startIndicesBatchingDims.size() &&
-        operandBatchingDims == startIndicesBatchingDims &&
-        startIndexMap.size() == 1 && indexVectorDim == (int64_t)indicesRank - 1 &&
+        operandBatchingDims == startIndicesBatchingDims && startIndexMap.size() == 1 &&
+        indexVectorDim == (int64_t)indicesRank - 1 &&
         [indicesShape[indicesRank - 1] integerValue] == 1) {
         int64_t gatherAxis = startIndexMap[0];
 
-        // Build indices shape matching operand rank: insert size-1 dims for non-batch, non-axis dims
-        // For operand [batch, D] with axis=1, indices should be [batch, 1]
+        // Build indices shape matching operand rank: insert size-1 dims for non-batch,
+        // non-axis dims. For operand [batch, D] with axis=1, indices should be [batch, 1].
         NSMutableArray<NSNumber*>* expandedShape = [NSMutableArray array];
         NSUInteger operandRank = operand.shape.count;
         for (NSUInteger d = 0; d < operandRank; d++) {
@@ -553,7 +553,7 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
         startIndexMap.size() > 1) {
         // Verify collapsed_slice_dims and start_index_map contain the same dims
         llvm::SmallVector<int64_t> sortedCollapsed(collapsedSliceDims.begin(),
-                                                    collapsedSliceDims.end());
+                                                   collapsedSliceDims.end());
         llvm::SmallVector<int64_t> sortedMap(startIndexMap.begin(), startIndexMap.end());
         llvm::sort(sortedCollapsed);
         llvm::sort(sortedMap);
