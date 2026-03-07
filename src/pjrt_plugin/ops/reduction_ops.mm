@@ -561,6 +561,167 @@ static ProcessResult HandleReduceWindow(HandlerContext& ctx) {
 }
 REGISTER_MPS_OP("stablehlo.reduce_window", HandleReduceWindow);
 
+// ---------------------------------------------------------------------------
+// select_and_scatter: max pool gradient
+// ---------------------------------------------------------------------------
+
+// Detect pool gradient type from select region comparison
+// GE = max pool gradient, LE = min pool gradient
+enum class PoolGradKind { kUnknown, kMax, kMin };
+
+static PoolGradKind DetectPoolGradKind(mlir::Region& select) {
+    if (select.empty())
+        return PoolGradKind::kUnknown;
+    mlir::Block& block = select.front();
+    for (mlir::Operation& op : block) {
+        auto compareOp = mlir::dyn_cast<mlir::stablehlo::CompareOp>(&op);
+        if (!compareOp)
+            continue;
+        auto dir = compareOp.getComparisonDirection();
+        if (dir == mlir::stablehlo::ComparisonDirection::GE)
+            return PoolGradKind::kMax;
+        if (dir == mlir::stablehlo::ComparisonDirection::LE)
+            return PoolGradKind::kMin;
+    }
+    return PoolGradKind::kUnknown;
+}
+
+// Detect if scatter region is addition (gradient accumulation pattern)
+static bool IsAddScatter(mlir::Region& scatter) {
+    std::string opType = GetReductionOpType(scatter);
+    return opType == "stablehlo.add";
+}
+
+static ProcessResult HandleSelectAndScatter(HandlerContext& ctx) {
+    auto sasOp = mlir::dyn_cast<mlir::stablehlo::SelectAndScatterOp>(ctx.op);
+    if (!sasOp)
+        return ProcessResult::Error("select_and_scatter: expected SelectAndScatterOp");
+
+    MPSGraphTensor* operand = GetInputTensor(ctx, 0);   // original input to forward max pool
+    MPSGraphTensor* source = GetInputTensor(ctx, 1);     // gradient from output
+    if (!operand || !source)
+        return ProcessResult::Error("select_and_scatter: missing input tensor");
+
+    // Only support pool gradient patterns: GE/LE select + add scatter
+    PoolGradKind poolKind = DetectPoolGradKind(sasOp.getSelect());
+    if (poolKind == PoolGradKind::kUnknown)
+        return ProcessResult::Error(
+            "select_and_scatter: only GE/LE select (pool gradient) is supported");
+    if (!IsAddScatter(sasOp.getScatter()))
+        return ProcessResult::Error(
+            "select_and_scatter: only add scatter (gradient accumulation) is supported");
+
+    auto operandType = mlir::dyn_cast<mlir::RankedTensorType>(sasOp.getOperand().getType());
+    if (!operandType)
+        return ProcessResult::Error("select_and_scatter: unranked operand");
+    auto operandShape = operandType.getShape();
+    int64_t rank = static_cast<int64_t>(operandShape.size());
+
+    if (rank > 4)
+        return ProcessResult::Error("select_and_scatter: rank > 4 not yet supported");
+
+    auto windowDimsOpt = sasOp.getWindowDimensions();
+    auto stridesOpt = sasOp.getWindowStrides();
+    auto paddingOpt = sasOp.getPadding();
+
+    std::vector<int64_t> windowDims(rank, 1);
+    std::vector<int64_t> strides(rank, 1);
+    std::vector<int64_t> padLow(rank, 0);
+    std::vector<int64_t> padHigh(rank, 0);
+
+    if (windowDimsOpt) {
+        auto wd = *windowDimsOpt;
+        for (int64_t i = 0; i < rank; i++)
+            windowDims[i] = wd[i];
+    }
+    if (stridesOpt) {
+        auto s = *stridesOpt;
+        for (int64_t i = 0; i < rank; i++)
+            strides[i] = s[i];
+    }
+    if (paddingOpt) {
+        auto vals = (*paddingOpt).getValues<int64_t>();
+        for (int64_t i = 0; i < rank; i++) {
+            padLow[i] = vals[{(uint64_t)i, 0}];
+            padHigh[i] = vals[{(uint64_t)i, 1}];
+        }
+    }
+
+    // Build 4D arrays for MPS pooling descriptor (same as HandlePoolingReduceWindow)
+    int64_t pad4 = 4 - rank;
+    NSMutableArray<NSNumber*>* kernelSizes = [NSMutableArray arrayWithCapacity:4];
+    NSMutableArray<NSNumber*>* mpsStrides = [NSMutableArray arrayWithCapacity:4];
+    NSMutableArray<NSNumber*>* dilationRates = [NSMutableArray arrayWithCapacity:4];
+    NSMutableArray<NSNumber*>* paddingValues = [NSMutableArray arrayWithCapacity:8];
+    NSMutableArray<NSNumber*>* operandReshape = [NSMutableArray arrayWithCapacity:4];
+    NSMutableArray<NSNumber*>* sourceReshape = [NSMutableArray arrayWithCapacity:4];
+
+    for (int64_t i = 0; i < pad4; i++) {
+        [kernelSizes addObject:@1];
+        [mpsStrides addObject:@1];
+        [dilationRates addObject:@1];
+        [paddingValues addObject:@0];
+        [paddingValues addObject:@0];
+        [operandReshape addObject:@1];
+        [sourceReshape addObject:@1];
+    }
+
+    auto sourceType = mlir::dyn_cast<mlir::RankedTensorType>(sasOp.getSource().getType());
+    auto sourceShape = sourceType.getShape();
+
+    for (int64_t i = 0; i < rank; i++) {
+        [kernelSizes addObject:@(windowDims[i])];
+        [mpsStrides addObject:@(strides[i])];
+        [dilationRates addObject:@1];
+        [paddingValues addObject:@(padLow[i])];
+        [paddingValues addObject:@(padHigh[i])];
+        [operandReshape addObject:@(operandShape[i])];
+        [sourceReshape addObject:@(sourceShape[i])];
+    }
+
+    // Reshape to 4D
+    MPSGraphTensor* operand4D = [ctx.graph reshapeTensor:operand
+                                               withShape:operandReshape
+                                                    name:nil];
+    MPSGraphTensor* source4D = [ctx.graph reshapeTensor:source
+                                              withShape:sourceReshape
+                                                   name:nil];
+
+    // Create pooling descriptor (same parameters as the forward max pool)
+    MPSGraphPooling4DOpDescriptor* desc =
+        [MPSGraphPooling4DOpDescriptor descriptorWithKernelSizes:kernelSizes
+                                                         strides:mpsStrides
+                                                   dilationRates:dilationRates
+                                                   paddingValues:paddingValues
+                                                    paddingStyle:MPSGraphPaddingStyleExplicit];
+
+    // For min pool gradient: negate inputs, use max pool grad, negate result
+    // min_pool_grad(g, x) = -max_pool_grad(-g, -x)
+    if (poolKind == PoolGradKind::kMin) {
+        operand4D = [ctx.graph negativeWithTensor:operand4D name:nil];
+        source4D = [ctx.graph negativeWithTensor:source4D name:nil];
+    }
+
+    // Use MPS's max pool gradient operation
+    MPSGraphTensor* result4D =
+        [ctx.graph maxPooling4DGradientWithGradientTensor:source4D
+                                            sourceTensor:operand4D
+                                              descriptor:desc
+                                                    name:nil];
+
+    if (poolKind == PoolGradKind::kMin) {
+        result4D = [ctx.graph negativeWithTensor:result4D name:nil];
+    }
+
+    // Reshape back to original rank
+    NSArray<NSNumber*>* outputShape = GetOutputShape(ctx.op);
+    if (outputShape)
+        result4D = [ctx.graph reshapeTensor:result4D withShape:outputShape name:nil];
+
+    return Result(ctx, result4D, "select_and_scatter");
+}
+REGISTER_MPS_OP("stablehlo.select_and_scatter", HandleSelectAndScatter);
+
 // stablehlo.return is a terminator used inside regions (e.g., reduce body)
 // It's handled implicitly by parent operations, not executed directly
 static ProcessResult HandleReturn(HandlerContext& ctx) {

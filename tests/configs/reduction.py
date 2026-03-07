@@ -83,8 +83,6 @@ def make_reduction_op_configs():
                 ),
                 lambda key: random.normal(key, (2, 8)),
                 name="maxpool1d-valid",
-                # Grad requires select_and_scatter (not yet supported)
-                differentiable_argnums=(),
             ),
             # Max pool 2D: window=(1,2,2,1), stride=(1,2,2,1) VALID
             OperationTestConfig(
@@ -93,8 +91,6 @@ def make_reduction_op_configs():
                 ),
                 lambda key: random.normal(key, (2, 8, 8, 3)),
                 name="maxpool2d-valid",
-                # Grad requires select_and_scatter (not yet supported)
-                differentiable_argnums=(),
             ),
             # Sum pool 2D: window=(1,2,2,1), stride=(1,2,2,1) VALID
             OperationTestConfig(
@@ -111,8 +107,6 @@ def make_reduction_op_configs():
                 ),
                 lambda key: random.normal(key, (2, 8, 8, 3)),
                 name="maxpool2d-same",
-                # Grad requires select_and_scatter (not yet supported)
-                differentiable_argnums=(),
             ),
             # Max pool 2D with window dilation: window=(1,2,2,1), stride=(1,1,1,1),
             # window_dilation=(1,2,2,1) and VALID padding.
@@ -139,8 +133,6 @@ def make_reduction_op_configs():
                 ),
                 lambda key: random.normal(key, (2, 8, 8, 3)),
                 name="maxpool2d-overlapping",
-                # Grad requires select_and_scatter (not yet supported)
-                differentiable_argnums=(),
             ),
             # Non-square window: 2x3 window
             OperationTestConfig(
@@ -149,8 +141,6 @@ def make_reduction_op_configs():
                 ),
                 lambda key: random.normal(key, (2, 8, 9, 3)),
                 name="maxpool2d-nonsquare",
-                # Grad requires select_and_scatter (not yet supported)
-                differentiable_argnums=(),
             ),
             # Sum pool with SAME padding
             OperationTestConfig(
@@ -167,8 +157,6 @@ def make_reduction_op_configs():
                 ),
                 lambda key: random.normal(key, (2, 8, 8, 3)),
                 name="minpool2d-valid",
-                # Grad requires select_and_scatter (not yet supported)
-                differentiable_argnums=(),
             ),
             # Min pool 1D: window=2, stride=2 on last axis (VALID padding)
             OperationTestConfig(
@@ -177,7 +165,6 @@ def make_reduction_op_configs():
                 ),
                 lambda key: random.normal(key, (2, 8)),
                 name="minpool1d-valid",
-                differentiable_argnums=(),
             ),
             # Min pool 2D with SAME padding
             OperationTestConfig(
@@ -186,7 +173,6 @@ def make_reduction_op_configs():
                 ),
                 lambda key: random.normal(key, (2, 8, 8, 3)),
                 name="minpool2d-same",
-                differentiable_argnums=(),
             ),
             # Average pool 2D (sum pool divided by window area)
             OperationTestConfig(
