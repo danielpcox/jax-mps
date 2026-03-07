@@ -1,7 +1,9 @@
-// Linear algebra operations: cholesky, triangular_solve
+// Linear algebra operations: cholesky, triangular_solve, QR, eigh
 // Uses native MPS kernels (MPSMatrixDecompositionCholesky, MPSMatrixSolveTriangular)
-// via the NativeOpRegistry.
+// and Accelerate LAPACK (sgeqrf_, sorgqr_, ssyevd_) for operations not
+// available in MPS Graph.
 
+#import <Accelerate/Accelerate.h>
 #import <MetalPerformanceShaders/MetalPerformanceShaders.h>
 
 #import "pjrt_plugin/mps_buffer.h"
@@ -466,5 +468,296 @@ REGISTER_NATIVE_MPS_OP("stablehlo.triangular_solve", NativeHandle_triangular_sol
 // func.call (e.g., in jnp.linalg.inv → @_lu_solve), the execution engine's
 // inline pass automatically inlines the callee so that segmented execution
 // can handle the native op properly.
+
+// ---------------------------------------------------------------------------
+// QR decomposition via Accelerate LAPACK
+// ---------------------------------------------------------------------------
+// custom_call @"Qr": computes QR factorization using sgeqrf_/dgeqrf_
+// Input: tensor<...xMxNxf32>
+// Output 0: tensor<...xMxNxf32> (R in upper triangle, Householder vectors below)
+// Output 1: tensor<...xmin(M,N)xf32> (tau values)
+
+static NativeResult NativeHandle_Qr(id<MTLDevice> device, id<MTLCommandBuffer> cmdBuf,
+                                     mlir::Operation* op,
+                                     const std::vector<id<MTLBuffer>>& inputs) {
+    if (inputs.empty())
+        return NativeResult::Error("Qr: missing input");
+
+    auto customCallOp = mlir::dyn_cast<mlir::stablehlo::CustomCallOp>(op);
+    if (!customCallOp || op->getNumResults() != 2)
+        return NativeResult::Error("Qr: expected CustomCallOp with 2 results");
+
+    auto inputType = mlir::cast<mlir::RankedTensorType>(op->getOperand(0).getType());
+    auto shape = inputType.getShape();
+    if (shape.size() < 2)
+        return NativeResult::Error("Qr: expected at least rank 2");
+
+    if (!inputType.getElementType().isF32())
+        return NativeResult::Error("Qr: only float32 supported");
+
+    int64_t m = shape[shape.size() - 2];
+    int64_t n = shape[shape.size() - 1];
+    int64_t k = std::min(m, n);
+
+    // Compute batch size
+    int64_t batchSize = 1;
+    for (size_t i = 0; i < shape.size() - 2; i++)
+        batchSize *= shape[i];
+
+    size_t matrixSize = (size_t)(m * n) * sizeof(float);
+    size_t tauSize = (size_t)k * sizeof(float);
+
+    // Allocate output buffers
+    size_t totalMatrixSize = (size_t)batchSize * matrixSize;
+    size_t totalTauSize = (size_t)batchSize * tauSize;
+
+    id<MTLBuffer> outMatrix = [device newBufferWithLength:totalMatrixSize
+                                                  options:MTLResourceStorageModeShared];
+    id<MTLBuffer> outTau = [device newBufferWithLength:totalTauSize
+                                               options:MTLResourceStorageModeShared];
+
+    // The execution engine flushes pending GPU work before native steps,
+    // so input data is available in shared memory.
+
+    // Copy input to output (LAPACK works in-place)
+    memcpy(outMatrix.contents, inputs[0].contents, totalMatrixSize);
+
+    // Process each batch element
+    for (int64_t b = 0; b < batchSize; b++) {
+        float* a = (float*)outMatrix.contents + b * m * n;
+        float* tau = (float*)outTau.contents + b * k;
+
+        // LAPACK uses column-major, but JAX uses row-major.
+        // sgeqrf on row-major A is equivalent to LQ on column-major A.
+        // We transpose in place, call sgeqrf, and transpose back.
+        // For simplicity, we transpose M×N → N×M, call sgeqrf(N, M), get taus of size k.
+
+        // Transpose in-place: allocate temp buffer
+        std::vector<float> temp(m * n);
+
+        // Row-major A[i,j] = a[i*n + j] → column-major A[i,j] = temp[j*m + i]
+        // Equivalently: transpose to get A^T in row-major = A in column-major
+        for (int64_t i = 0; i < m; i++)
+            for (int64_t j = 0; j < n; j++)
+                temp[j * m + i] = a[i * n + j];
+
+        __CLPK_integer lm = (__CLPK_integer)m;
+        __CLPK_integer ln = (__CLPK_integer)n;
+        __CLPK_integer lda = (__CLPK_integer)m;  // leading dim for column-major (m×n in col-major = m)
+        __CLPK_integer info = 0;
+        __CLPK_integer lwork = -1;
+
+        // Query optimal workspace
+        float work_query;
+        sgeqrf_(&lm, &ln, temp.data(), &lda, tau, &work_query, &lwork, &info);
+        lwork = (__CLPK_integer)work_query;
+        std::vector<float> work(lwork);
+
+        // Compute QR
+        sgeqrf_(&lm, &ln, temp.data(), &lda, tau, work.data(), &lwork, &info);
+        if (info != 0)
+            return NativeResult::Error("Qr: sgeqrf failed with info=" + std::to_string(info));
+
+        // Transpose back: column-major result → row-major
+        for (int64_t i = 0; i < m; i++)
+            for (int64_t j = 0; j < n; j++)
+                a[i * n + j] = temp[j * m + i];
+    }
+
+    return NativeResult::Buffers({outMatrix, outTau});
+}
+
+// Register Qr as a NATIVE custom call target
+static bool _cc_reg_Qr =
+    CustomCallRegistry::Register("Qr", OpHandler::Native(NativeHandle_Qr));
+
+// ---------------------------------------------------------------------------
+// ProductOfElementaryHouseholderReflectors via Accelerate LAPACK (sorgqr_)
+// ---------------------------------------------------------------------------
+// custom_call @"ProductOfElementaryHouseholderReflectors"
+// Input 0: tensor<...xMxNxf32> (packed QR result from Qr)
+// Input 1: tensor<...xKxf32> (tau values)
+// Output: tensor<...xMxNxf32> (Q matrix)
+
+static NativeResult NativeHandle_HouseholderProduct(id<MTLDevice> device,
+                                                     id<MTLCommandBuffer> cmdBuf,
+                                                     mlir::Operation* op,
+                                                     const std::vector<id<MTLBuffer>>& inputs) {
+    if (inputs.size() < 2)
+        return NativeResult::Error("HouseholderProduct: need 2 inputs");
+
+    auto customCallOp = mlir::dyn_cast<mlir::stablehlo::CustomCallOp>(op);
+    if (!customCallOp || op->getNumResults() != 1)
+        return NativeResult::Error("HouseholderProduct: expected CustomCallOp with 1 result");
+
+    auto inputType = mlir::cast<mlir::RankedTensorType>(op->getOperand(0).getType());
+    auto tauType = mlir::cast<mlir::RankedTensorType>(op->getOperand(1).getType());
+    auto shape = inputType.getShape();
+    if (shape.size() < 2)
+        return NativeResult::Error("HouseholderProduct: expected at least rank 2");
+
+    if (!inputType.getElementType().isF32())
+        return NativeResult::Error("HouseholderProduct: only float32 supported");
+
+    int64_t m = shape[shape.size() - 2];
+    int64_t n = shape[shape.size() - 1];
+    int64_t k = tauType.getShape().back();
+
+    int64_t batchSize = 1;
+    for (size_t i = 0; i < shape.size() - 2; i++)
+        batchSize *= shape[i];
+
+    // Output shape matches input shape
+    auto outType = mlir::cast<mlir::RankedTensorType>(op->getResult(0).getType());
+    auto outShape = outType.getShape();
+    int64_t outM = outShape[outShape.size() - 2];
+    int64_t outN = outShape[outShape.size() - 1];
+
+    size_t outMatrixSize = (size_t)(outM * outN) * sizeof(float);
+    size_t totalOutSize = (size_t)batchSize * outMatrixSize;
+
+    id<MTLBuffer> outBuf = [device newBufferWithLength:totalOutSize
+                                               options:MTLResourceStorageModeShared];
+
+    // Copy packed QR input to output (sorgqr works in-place)
+    size_t inputMatrixSize = (size_t)(m * n) * sizeof(float);
+    size_t tauBatchSize = (size_t)k * sizeof(float);
+
+    for (int64_t b = 0; b < batchSize; b++) {
+        const float* aIn = (const float*)inputs[0].contents + b * m * n;
+        const float* tauIn = (const float*)inputs[1].contents + b * k;
+        float* out = (float*)outBuf.contents + b * outM * outN;
+
+        // Transpose to column-major for LAPACK
+        std::vector<float> temp(m * n);
+        for (int64_t i = 0; i < m; i++)
+            for (int64_t j = 0; j < n; j++)
+                temp[j * m + i] = aIn[i * n + j];
+
+        // Copy tau (1D, no transpose needed)
+        std::vector<float> tau(k);
+        memcpy(tau.data(), tauIn, k * sizeof(float));
+
+        __CLPK_integer lm = (__CLPK_integer)m;
+        __CLPK_integer ln = (__CLPK_integer)n;
+        __CLPK_integer lk = (__CLPK_integer)k;
+        __CLPK_integer lda = (__CLPK_integer)m;
+        __CLPK_integer info = 0;
+        __CLPK_integer lwork = -1;
+
+        // Query workspace
+        float work_query;
+        sorgqr_(&lm, &ln, &lk, temp.data(), &lda, tau.data(), &work_query, &lwork, &info);
+        lwork = (__CLPK_integer)work_query;
+        std::vector<float> work(lwork);
+
+        // Compute Q
+        sorgqr_(&lm, &ln, &lk, temp.data(), &lda, tau.data(), work.data(), &lwork, &info);
+        if (info != 0)
+            return NativeResult::Error("HouseholderProduct: sorgqr failed with info=" +
+                                       std::to_string(info));
+
+        // Transpose back: column-major → row-major
+        for (int64_t i = 0; i < outM; i++)
+            for (int64_t j = 0; j < outN; j++)
+                out[i * outN + j] = temp[j * m + i];
+    }
+
+    return NativeResult::Buffer(outBuf);
+}
+
+static bool _cc_reg_HouseholderProduct = CustomCallRegistry::Register(
+    "ProductOfElementaryHouseholderReflectors",
+    OpHandler::Native(NativeHandle_HouseholderProduct));
+
+// ---------------------------------------------------------------------------
+// Symmetric eigendecomposition via Accelerate LAPACK (ssyevd_)
+// ---------------------------------------------------------------------------
+// custom_call @"mps_syevd": computes eigenvalues and eigenvectors
+// Input: tensor<...xNxNxf32> (symmetric matrix)
+// Output 0: tensor<...xNxNxf32> (eigenvectors)
+// Output 1: tensor<...xNxf32> (eigenvalues)
+
+static NativeResult NativeHandle_Syevd(id<MTLDevice> device, id<MTLCommandBuffer> cmdBuf,
+                                        mlir::Operation* op,
+                                        const std::vector<id<MTLBuffer>>& inputs) {
+    if (inputs.empty())
+        return NativeResult::Error("Syevd: missing input");
+
+    auto customCallOp = mlir::dyn_cast<mlir::stablehlo::CustomCallOp>(op);
+    if (!customCallOp || op->getNumResults() != 2)
+        return NativeResult::Error("Syevd: expected CustomCallOp with 2 results");
+
+    auto inputType = mlir::cast<mlir::RankedTensorType>(op->getOperand(0).getType());
+    auto shape = inputType.getShape();
+    if (shape.size() < 2)
+        return NativeResult::Error("Syevd: expected at least rank 2");
+    if (!inputType.getElementType().isF32())
+        return NativeResult::Error("Syevd: only float32 supported");
+
+    int64_t n = shape[shape.size() - 1];
+
+    int64_t batchSize = 1;
+    for (size_t i = 0; i < shape.size() - 2; i++)
+        batchSize *= shape[i];
+
+    size_t matrixSize = (size_t)(n * n) * sizeof(float);
+    size_t eigenvalSize = (size_t)n * sizeof(float);
+    size_t totalMatrixSize = (size_t)batchSize * matrixSize;
+    size_t totalEigenvalSize = (size_t)batchSize * eigenvalSize;
+
+    id<MTLBuffer> outVectors = [device newBufferWithLength:totalMatrixSize
+                                                   options:MTLResourceStorageModeShared];
+    id<MTLBuffer> outValues = [device newBufferWithLength:totalEigenvalSize
+                                                  options:MTLResourceStorageModeShared];
+
+    // Copy input (ssyevd works in-place, overwrites with eigenvectors)
+    memcpy(outVectors.contents, inputs[0].contents, totalMatrixSize);
+
+    for (int64_t b = 0; b < batchSize; b++) {
+        float* a = (float*)outVectors.contents + b * n * n;
+        float* w = (float*)outValues.contents + b * n;
+
+        // Transpose to column-major for LAPACK
+        std::vector<float> temp(n * n);
+        for (int64_t i = 0; i < n; i++)
+            for (int64_t j = 0; j < n; j++)
+                temp[j * n + i] = a[i * n + j];
+
+        char jobz = 'V';  // Compute eigenvalues and eigenvectors
+        char uplo = 'L';  // Lower triangle
+        __CLPK_integer ln = (__CLPK_integer)n;
+        __CLPK_integer lda = (__CLPK_integer)n;
+        __CLPK_integer info = 0;
+        __CLPK_integer lwork = -1;
+        __CLPK_integer liwork = -1;
+
+        // Query workspace
+        float work_query;
+        __CLPK_integer iwork_query;
+        ssyevd_(&jobz, &uplo, &ln, temp.data(), &lda, w, &work_query, &lwork, &iwork_query, &liwork,
+                &info);
+        lwork = (__CLPK_integer)work_query;
+        liwork = iwork_query;
+        std::vector<float> work(lwork);
+        std::vector<__CLPK_integer> iwork(liwork);
+
+        // Compute eigendecomposition
+        ssyevd_(&jobz, &uplo, &ln, temp.data(), &lda, w, work.data(), &lwork, iwork.data(), &liwork,
+                &info);
+        if (info != 0)
+            return NativeResult::Error("Syevd: ssyevd failed with info=" + std::to_string(info));
+
+        // Transpose eigenvectors back: column-major → row-major
+        for (int64_t i = 0; i < n; i++)
+            for (int64_t j = 0; j < n; j++)
+                a[i * n + j] = temp[j * n + i];
+    }
+
+    return NativeResult::Buffers({outVectors, outValues});
+}
+
+static bool _cc_reg_Syevd =
+    CustomCallRegistry::Register("mps_syevd", OpHandler::Native(NativeHandle_Syevd));
 
 }  // namespace jax_mps

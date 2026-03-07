@@ -28,6 +28,7 @@ find_library(METAL_FRAMEWORK Metal REQUIRED)
 find_library(MPS_FRAMEWORK MetalPerformanceShaders REQUIRED)
 find_library(MPSGRAPH_FRAMEWORK MetalPerformanceShadersGraph REQUIRED)
 find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+find_library(ACCELERATE_FRAMEWORK Accelerate REQUIRED)
 
 # XLA PJRT headers (installed by setup_deps.sh)
 find_path(XLA_INCLUDE_DIR
@@ -243,6 +244,7 @@ target_link_libraries(pjrt_plugin_mps PRIVATE
     ${MPS_FRAMEWORK}
     ${MPSGRAPH_FRAMEWORK}
     ${FOUNDATION_FRAMEWORK}
+    ${ACCELERATE_FRAMEWORK}
     ${STABLEHLO_LIBS}
     ${MLIR_LIBS}
     protobuf::libprotobuf

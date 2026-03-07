@@ -40,7 +40,7 @@ struct NativeStep {
     NativeOpHandler handler;
     mlir::Operation* op;
     std::vector<SlotId> input_slots;
-    SlotId output_slot;
+    std::vector<SlotId> output_slots;
 };
 
 struct Step {
@@ -303,6 +303,12 @@ bool MpsExecutable::BuildExecutionPlan() {
                             should_inline = true;
                         } else if (mlir::dyn_cast<mlir::func::CallOp>(inner)) {
                             should_inline = true;
+                        } else if (auto ccOp = mlir::dyn_cast<mlir::stablehlo::CustomCallOp>(inner)) {
+                            const OpHandler* ccH =
+                                CustomCallRegistry::Find(ccOp.getCallTargetName().str());
+                            if (ccH && ccH->is_native()) {
+                                should_inline = true;
+                            }
                         }
                     });
                     if (!should_inline)
@@ -369,12 +375,18 @@ bool MpsExecutable::BuildExecutionPlan() {
             const OpHandler* handler = OpRegistry::Find(op_name);
             bool is_native = handler && handler->is_native();
 
-            if (is_native) {
-                // Validate: native ops must have exactly one result for now
-                if (op->getNumResults() != 1) {
-                    error_ = "Native op '" + op_name + "' must have exactly one result";
-                    return false;
+            // Check if this is a custom_call with a NATIVE target
+            if (!is_native) {
+                if (auto customCallOp = mlir::dyn_cast<mlir::stablehlo::CustomCallOp>(op)) {
+                    std::string target = customCallOp.getCallTargetName().str();
+                    const OpHandler* ccHandler = CustomCallRegistry::Find(target);
+                    if (ccHandler && ccHandler->is_native()) {
+                        is_native = true;
+                    }
                 }
+            }
+
+            if (is_native) {
                 // Close current graph segment
                 if (!current_segment.ops.empty()) {
                     segments.push_back(std::move(current_segment));
@@ -516,16 +528,33 @@ bool MpsExecutable::BuildExecutionPlan() {
                 // ----- Native step -----
                 mlir::Operation* op = seg.ops[0];
                 std::string op_name = op->getName().getStringRef().str();
+
+                // Find the native handler: check OpRegistry first, then CustomCallRegistry
+                NativeOpHandler native_handler = nullptr;
                 const OpHandler* handler = OpRegistry::Find(op_name);
+                if (handler && handler->is_native()) {
+                    native_handler = handler->native_handler;
+                } else if (auto customCallOp = mlir::dyn_cast<mlir::stablehlo::CustomCallOp>(op)) {
+                    std::string target = customCallOp.getCallTargetName().str();
+                    const OpHandler* ccHandler = CustomCallRegistry::Find(target);
+                    if (ccHandler && ccHandler->is_native()) {
+                        native_handler = ccHandler->native_handler;
+                    }
+                }
+                if (!native_handler) {
+                    error_ = "Native handler not found for op '" + op_name + "'";
+                    return false;
+                }
 
                 NativeStep ns;
-                ns.handler = handler->native_handler;
+                ns.handler = native_handler;
                 ns.op = op;
                 for (mlir::Value operand : op->getOperands()) {
                     ns.input_slots.push_back(value_to_slot[operand.getAsOpaquePointer()]);
                 }
-                // single-result assumption (validated earlier)
-                ns.output_slot = value_to_slot[op->getResult(0).getAsOpaquePointer()];
+                for (unsigned i = 0; i < op->getNumResults(); i++) {
+                    ns.output_slots.push_back(value_to_slot[op->getResult(i).getAsOpaquePointer()]);
+                }
 
                 plan->native_steps.push_back(ns);
                 plan->steps.push_back({Step::NATIVE, plan->native_steps.size() - 1});
@@ -848,14 +877,27 @@ ExecutionResult MpsExecutable::Execute(const std::vector<MpsBuffer*>& inputs, Mp
             }
         }
 
-        // Single command buffer for all steps. MPSCommandBuffer is required by
+        // Command buffer for encoding steps. MPSCommandBuffer is required by
         // MPSGraph's encodeToCommandBuffer: and is accepted by native MPS kernels
         // via id<MTLCommandBuffer> conformance.
+        // Some native steps (LAPACK) need CPU access, so the command buffer may be
+        // committed and recreated between steps.
         MPSCommandBuffer* cmdBuf = [MPSCommandBuffer commandBufferFromCommandQueue:commandQueue];
         if (!cmdBuf) {
             release_intermediates(false);
             return ExecutionResult::Error("Failed to create command buffer");
         }
+
+        // Helper to flush pending GPU work (commit, wait, create new command buffer)
+        auto flushCommandBuffer = [&]() -> bool {
+            [cmdBuf commit];
+            [cmdBuf waitUntilCompleted];
+            if (cmdBuf.status == MTLCommandBufferStatusError) {
+                return false;
+            }
+            cmdBuf = [MPSCommandBuffer commandBufferFromCommandQueue:commandQueue];
+            return cmdBuf != nil;
+        };
 
         // Execute steps
         MPS_LOG_DEBUG("Executing %zu steps\n", plan_->steps.size());
@@ -969,6 +1011,14 @@ ExecutionResult MpsExecutable::Execute(const std::vector<MpsBuffer*>& inputs, Mp
                 MPS_LOG_DEBUG("  Graph step %zu complete\n", step_idx);
             } else {
                 // ----- Native step -----
+                // Flush pending GPU work so native handlers can read input data.
+                // This is required for LAPACK-based handlers (QR, eigh) that access
+                // buffer contents on CPU, and harmless for MPS-native handlers.
+                if (!flushCommandBuffer()) {
+                    release_intermediates(false);
+                    return ExecutionResult::Error("Failed to flush command buffer before native step");
+                }
+
                 auto& ns = plan_->native_steps[step.index];
 
                 std::vector<id<MTLBuffer>> input_bufs;
@@ -983,7 +1033,15 @@ ExecutionResult MpsExecutable::Execute(const std::vector<MpsBuffer*>& inputs, Mp
                     return ExecutionResult::Error(result.error);
                 }
 
-                slot_bufs[ns.output_slot] = result.buffer;
+                if (result.buffers.size() != ns.output_slots.size()) {
+                    release_intermediates(false);
+                    return ExecutionResult::Error(
+                        "Native op returned " + std::to_string(result.buffers.size()) +
+                        " buffers but expected " + std::to_string(ns.output_slots.size()));
+                }
+                for (size_t i = 0; i < ns.output_slots.size(); i++) {
+                    slot_bufs[ns.output_slots[i]] = result.buffers[i];
+                }
             }
         }
 

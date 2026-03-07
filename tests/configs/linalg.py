@@ -210,3 +210,71 @@ def make_linalg_op_configs():
                 lambda key, n=n: _random_posdef(key, n),
                 name=f"inv_{n}x{n}",
             )
+
+        # --- QR decomposition (via Accelerate LAPACK) ---
+
+        # QR on tall matrices
+        for m, n in [(4, 3), (5, 3), (6, 4)]:
+            yield OperationTestConfig(
+                lambda x: jnp.linalg.qr(x)[0],
+                lambda key, m=m, n=n: random.normal(key, (m, n)),
+                differentiable_argnums=(0,),
+                name=f"qr_Q_{m}x{n}",
+            )
+            yield OperationTestConfig(
+                lambda x: jnp.linalg.qr(x)[1],
+                lambda key, m=m, n=n: random.normal(key, (m, n)),
+                differentiable_argnums=(0,),
+                name=f"qr_R_{m}x{n}",
+            )
+
+        # QR on square matrix
+        yield OperationTestConfig(
+            lambda x: jnp.linalg.qr(x)[0],
+            lambda key: random.normal(key, (3, 3)),
+            differentiable_argnums=(0,),
+            name="qr_Q_3x3",
+        )
+
+        # QR on wide matrix (grad not supported by JAX for wide matrices)
+        yield OperationTestConfig(
+            lambda x: jnp.linalg.qr(x)[0],
+            lambda key: random.normal(key, (3, 5)),
+            differentiable_argnums=(),
+            name="qr_Q_3x5",
+        )
+
+        # --- Symmetric eigendecomposition (via Accelerate LAPACK) ---
+
+        # eigh: eigenvalues only
+        for n in [2, 3, 4]:
+            yield OperationTestConfig(
+                jnp.linalg.eigvalsh,
+                lambda key, n=n: _random_posdef(key, n),
+                name=f"eigvalsh_{n}x{n}",
+            )
+
+        # eigh: eigenvalues and eigenvectors
+        for n in [2, 3, 4]:
+            yield OperationTestConfig(
+                lambda x: jnp.linalg.eigh(x)[0],
+                lambda key, n=n: _random_posdef(key, n),
+                differentiable_argnums=(0,),
+                name=f"eigh_values_{n}x{n}",
+            )
+
+        # --- det and slogdet (use LU internally) ---
+
+        for n in [2, 3, 4]:
+            yield OperationTestConfig(
+                jnp.linalg.det,
+                lambda key, n=n: _random_posdef(key, n),
+                name=f"det_{n}x{n}",
+            )
+
+        yield OperationTestConfig(
+            lambda x: jnp.linalg.slogdet(x)[1],
+            lambda key: _random_posdef(key, 3),
+            differentiable_argnums=(0,),
+            name="slogdet_logabsdet_3x3",
+        )

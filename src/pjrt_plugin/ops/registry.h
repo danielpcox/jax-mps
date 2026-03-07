@@ -74,7 +74,7 @@ using GraphOpHandler = ProcessResult (*)(HandlerContext& ctx);
 
 // Result type for native op handlers - can be an error or a buffer
 struct NativeResult {
-    id<MTLBuffer> buffer = nil;
+    std::vector<id<MTLBuffer>> buffers;
     std::string error;
 
     bool ok() const {
@@ -89,8 +89,19 @@ struct NativeResult {
 
     static NativeResult Buffer(id<MTLBuffer> buf) {
         NativeResult r;
-        r.buffer = buf;
+        r.buffers.push_back(buf);
         return r;
+    }
+
+    static NativeResult Buffers(std::vector<id<MTLBuffer>> bufs) {
+        NativeResult r;
+        r.buffers = std::move(bufs);
+        return r;
+    }
+
+    // Convenience accessor for single-output ops
+    id<MTLBuffer> buffer() const {
+        return buffers.empty() ? nil : buffers[0];
     }
 };
 

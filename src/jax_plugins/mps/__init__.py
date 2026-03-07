@@ -91,6 +91,35 @@ def _check_jaxlib_version():
         pass  # Don't fail initialization due to version check issues
 
 
+def _register_lowering_rules():
+    """Register MLIR lowering rules for primitives that need platform-specific handling."""
+    try:
+        from jax._src.interpreters import mlir
+        from jax._src.lax import linalg as lax_linalg
+
+        def _eigh_mps_lowering(ctx, operand, *, lower, sort_eigenvalues, subset_by_index, algorithm):
+            """Lower eigh to custom_call @mps_syevd."""
+            v_aval, w_aval = ctx.avals_out
+            result_types = [mlir.aval_to_ir_type(v_aval), mlir.aval_to_ir_type(w_aval)]
+            op = mlir.custom_call(
+                "mps_syevd",
+                result_types=result_types,
+                operands=[operand],
+                api_version=1,
+            )
+            return op.results
+
+        # Register under "mps" (backend platform name used during lowering lookup).
+        # JAX's register_lowering validates against known_platforms() which includes
+        # "METAL" from the PJRT plugin, but lowering dispatch uses the backend name
+        # "mps". We register directly into the platform-specific lowerings dict.
+        mlir._platform_specific_lowerings.setdefault("mps", {})[
+            lax_linalg.eigh_p
+        ] = mlir.LoweringRuleEntry(_eigh_mps_lowering, True)
+    except Exception:
+        pass  # Don't fail initialization if lowering registration fails
+
+
 def initialize():
     """Initialize the MPS plugin with JAX.
 
@@ -128,6 +157,9 @@ def initialize():
             f"Failed to disable shardy partitioner: {e}. Some operations may not work correctly.",
             stacklevel=2,
         )
+
+    # Register lowering rules for primitives not in StableHLO
+    _register_lowering_rules()
 
     # Register the plugin using JAX's xla_bridge API
     try:
