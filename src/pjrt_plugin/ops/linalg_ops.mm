@@ -1363,4 +1363,167 @@ static NativeResult NativeHandle_Sgeev(id<MTLDevice> device, id<MTLCommandBuffer
 static bool _cc_reg_Sgeev =
     CustomCallRegistry::Register("mps_sgeev", OpHandler::Native(NativeHandle_Sgeev));
 
+// ---------------------------------------------------------------------------
+// Schur decomposition via Accelerate LAPACK (sgees_ / cgees_)
+// ---------------------------------------------------------------------------
+// custom_call @"mps_sgees": computes Schur decomposition A = Q*T*Q^H
+// Input: tensor<...xNxNxf32> or tensor<...xNxNxcomplex<f32>> (square matrix)
+// Output 0: tensor<...xNxNx(same)> (T - Schur form)
+// Output 1: tensor<...xNxNx(same)> (Q - Schur vectors, if compute_schur_vectors)
+
+static NativeResult NativeHandle_Sgees(id<MTLDevice> device, id<MTLCommandBuffer> cmdBuf,
+                                        mlir::Operation* op,
+                                        const std::vector<id<MTLBuffer>>& inputs) {
+    if (inputs.empty())
+        return NativeResult::Error("Sgees: missing input");
+
+    auto inputType = mlir::cast<mlir::RankedTensorType>(op->getOperand(0).getType());
+    auto shape = inputType.getShape();
+    if (shape.size() < 2)
+        return NativeResult::Error("Sgees: expected at least rank 2");
+
+    bool isComplex = mlir::isa<mlir::ComplexType>(inputType.getElementType());
+    if (!inputType.getElementType().isF32() && !isComplex)
+        return NativeResult::Error("Sgees: only float32 and complex64 supported");
+
+    int64_t n = shape[shape.size() - 1];
+    int64_t batchSize = 1;
+    for (size_t i = 0; i < shape.size() - 2; i++)
+        batchSize *= shape[i];
+
+    // Parse backend_config for compute_schur_vectors
+    bool computeVectors = true;
+    auto customCallOp = mlir::dyn_cast<mlir::stablehlo::CustomCallOp>(op);
+    if (customCallOp) {
+        auto configOpt = customCallOp.getBackendConfig();
+        if (configOpt.has_value()) {
+            if (auto strAttr = mlir::dyn_cast<mlir::StringAttr>(*configOpt)) {
+                auto config = strAttr.getValue().str();
+                computeVectors = (config[0] == '1');
+            }
+        }
+    }
+
+    size_t elemSize = isComplex ? sizeof(float) * 2 : sizeof(float);
+    size_t matSize = (size_t)(n * n) * elemSize;
+
+    // Output: T (Schur form)
+    id<MTLBuffer> outT = [device newBufferWithLength:(size_t)batchSize * matSize
+                                              options:MTLResourceStorageModeShared];
+    // Output: Q (Schur vectors) - always allocated even if not computed
+    id<MTLBuffer> outQ = [device newBufferWithLength:(size_t)batchSize * matSize
+                                              options:MTLResourceStorageModeShared];
+
+    for (int64_t b = 0; b < batchSize; b++) {
+        char jobvs = computeVectors ? 'V' : 'N';
+        char sort = 'N';  // No sorting
+        __CLPK_integer ln = (__CLPK_integer)n;
+        __CLPK_integer sdim = 0;
+        __CLPK_integer info = 0;
+        __CLPK_integer lwork = -1;
+        __CLPK_integer ldvs = (__CLPK_integer)n;
+
+        if (isComplex) {
+            const float* inputRaw = (const float*)inputs[0].contents + b * n * n * 2;
+
+            // Transpose to column-major
+            std::vector<float> aCm(n * n * 2);
+            for (int64_t i = 0; i < n; i++)
+                for (int64_t j = 0; j < n; j++) {
+                    aCm[(j * n + i) * 2] = inputRaw[(i * n + j) * 2];
+                    aCm[(j * n + i) * 2 + 1] = inputRaw[(i * n + j) * 2 + 1];
+                }
+
+            std::vector<__CLPK_complex> w(n);
+            std::vector<__CLPK_complex> vs(computeVectors ? n * n : 1);
+            std::vector<float> rwork(n);
+
+            // Query workspace
+            __CLPK_complex work_query;
+            cgees_(&jobvs, &sort, nullptr, &ln, (__CLPK_complex*)aCm.data(), &ln,
+                   &sdim, w.data(), vs.data(), &ldvs, &work_query, &lwork,
+                   rwork.data(), nullptr, &info);
+            lwork = (__CLPK_integer)work_query.r;
+            std::vector<__CLPK_complex> work(lwork);
+
+            // Compute Schur decomposition
+            cgees_(&jobvs, &sort, nullptr, &ln, (__CLPK_complex*)aCm.data(), &ln,
+                   &sdim, w.data(), vs.data(), &ldvs, work.data(), &lwork,
+                   rwork.data(), nullptr, &info);
+
+            if (info != 0)
+                return NativeResult::Error("Sgees: cgees failed with info=" +
+                                           std::to_string(info));
+
+            // Transpose T (in aCm after cgees_) from column-major to row-major
+            float* tOut = (float*)outT.contents + b * n * n * 2;
+            for (int64_t i = 0; i < n; i++)
+                for (int64_t j = 0; j < n; j++) {
+                    tOut[(i * n + j) * 2] = aCm[(j * n + i) * 2];
+                    tOut[(i * n + j) * 2 + 1] = aCm[(j * n + i) * 2 + 1];
+                }
+
+            // Transpose Q (vs) from column-major to row-major
+            if (computeVectors) {
+                float* qOut = (float*)outQ.contents + b * n * n * 2;
+                for (int64_t i = 0; i < n; i++)
+                    for (int64_t j = 0; j < n; j++) {
+                        qOut[(i * n + j) * 2] = vs[j * n + i].r;
+                        qOut[(i * n + j) * 2 + 1] = vs[j * n + i].i;
+                    }
+            }
+        } else {
+            const float* inputRaw = (const float*)inputs[0].contents + b * n * n;
+
+            // Transpose to column-major
+            std::vector<float> aCm(n * n);
+            for (int64_t i = 0; i < n; i++)
+                for (int64_t j = 0; j < n; j++)
+                    aCm[j * n + i] = inputRaw[i * n + j];
+
+            std::vector<float> wr(n), wi(n);
+            std::vector<float> vs(computeVectors ? n * n : 1);
+
+            // Query workspace
+            float work_query;
+            sgees_(&jobvs, &sort, nullptr, &ln, aCm.data(), &ln,
+                   &sdim, wr.data(), wi.data(), vs.data(), &ldvs,
+                   &work_query, &lwork, nullptr, &info);
+            lwork = (__CLPK_integer)work_query;
+            std::vector<float> work(lwork);
+
+            // Compute Schur decomposition
+            sgees_(&jobvs, &sort, nullptr, &ln, aCm.data(), &ln,
+                   &sdim, wr.data(), wi.data(), vs.data(), &ldvs,
+                   work.data(), &lwork, nullptr, &info);
+
+            if (info != 0)
+                return NativeResult::Error("Sgees: sgees failed with info=" +
+                                           std::to_string(info));
+
+            // Transpose T from column-major to row-major
+            float* tOut = (float*)outT.contents + b * n * n;
+            for (int64_t i = 0; i < n; i++)
+                for (int64_t j = 0; j < n; j++)
+                    tOut[i * n + j] = aCm[j * n + i];
+
+            // Transpose Q from column-major to row-major
+            if (computeVectors) {
+                float* qOut = (float*)outQ.contents + b * n * n;
+                for (int64_t i = 0; i < n; i++)
+                    for (int64_t j = 0; j < n; j++)
+                        qOut[i * n + j] = vs[j * n + i];
+            }
+        }
+    }
+
+    if (computeVectors)
+        return NativeResult::Buffers({outT, outQ});
+    else
+        return NativeResult::Buffers({outT});
+}
+
+static bool _cc_reg_Sgees =
+    CustomCallRegistry::Register("mps_sgees", OpHandler::Native(NativeHandle_Sgees));
+
 }  // namespace jax_mps

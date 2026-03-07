@@ -225,6 +225,38 @@ def _register_lowering_rules():
         mps_lowerings[lax_linalg.eig_p] = mlir.LoweringRuleEntry(
             _eig_mps_lowering, True
         )
+
+        def _schur_mps_lowering(
+            ctx,
+            operand,
+            *,
+            compute_schur_vectors,
+            sort_eig_vals,
+            select_callable,
+        ):
+            """Lower schur to custom_call @mps_sgees."""
+            operand_aval = ctx.avals_in[0]
+            t_aval = ctx.avals_out[0]
+            result_types = [mlir.aval_to_ir_type(t_aval)]
+            if compute_schur_vectors:
+                q_aval = ctx.avals_out[1]
+                result_types.append(mlir.aval_to_ir_type(q_aval))
+            config = f"{int(compute_schur_vectors)}"
+            op = mlir.custom_call(
+                "mps_sgees",
+                result_types=result_types,
+                operands=[operand],
+                api_version=1,
+                backend_config=config,
+            )
+            results = [op.results[0]]
+            if compute_schur_vectors:
+                results.append(op.results[1])
+            return results
+
+        mps_lowerings[lax_linalg.schur_p] = mlir.LoweringRuleEntry(
+            _schur_mps_lowering, True
+        )
     except Exception:
         pass  # Don't fail initialization if lowering registration fails
 

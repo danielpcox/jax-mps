@@ -646,6 +646,56 @@ def make_linalg_op_configs():
             name="eig_values_complex_batched",
         )
 
+        # --- Schur decomposition ---
+
+        # Real Schur: verify T is upper quasi-triangular and Q is orthogonal
+        for n in [2, 3, 4]:
+            yield OperationTestConfig(
+                lambda x: jax.scipy.linalg.schur(x)[0],
+                lambda key, n=n: random.normal(key, (n, n)),
+                differentiable_argnums=(),
+                name=f"schur_T_{n}x{n}",
+            )
+            yield OperationTestConfig(
+                lambda x: jax.scipy.linalg.schur(x)[1],
+                lambda key, n=n: random.normal(key, (n, n)),
+                differentiable_argnums=(),
+                name=f"schur_Q_{n}x{n}",
+            )
+
+        # Batched Schur
+        yield OperationTestConfig(
+            lambda x: jax.scipy.linalg.schur(x)[0],
+            lambda key: random.normal(key, (2, 3, 3)),
+            differentiable_argnums=(),
+            name="schur_T_batched",
+        )
+
+        # Complex Schur: verify reconstruction A ≈ Q @ T @ Q^H
+        # (Schur form is not unique - eigenvalue ordering may differ between backends)
+        for n in [2, 3, 4]:
+            yield OperationTestConfig(
+                lambda x: (
+                    lambda TQ: TQ[1] @ TQ[0] @ TQ[1].conj().T
+                )(jax.scipy.linalg.schur(x)),
+                lambda key, n=n: (
+                    random.normal(key, (n, n))
+                    + 1j * random.normal(random.split(key)[0], (n, n))
+                ),
+                differentiable_argnums=(),
+                name=f"schur_reconstruct_complex_{n}x{n}",
+            )
+
+        # --- sqrtm (matrix square root, depends on Schur) ---
+
+        for n in [2, 3, 4]:
+            yield OperationTestConfig(
+                jax.scipy.linalg.sqrtm,
+                lambda key, n=n: _random_posdef(key, n),
+                differentiable_argnums=(),
+                name=f"sqrtm_{n}x{n}",
+            )
+
         # --- expm (matrix exponential, uses solve inside control flow) ---
 
         # expm of identity-like matrix
