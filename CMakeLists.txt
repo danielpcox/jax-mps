@@ -115,7 +115,7 @@ set(PJRT_SOURCES
     src/pjrt_plugin/pjrt_memory.cc
     src/pjrt_plugin/pjrt_buffer.cc
     src/pjrt_plugin/pjrt_executable.cc
-    src/pjrt_plugin/pjrt_event.cc
+    src/pjrt_plugin/pjrt_event.mm
     src/pjrt_plugin/pjrt_topology.cc
     src/pjrt_plugin/mps_client.mm
     src/pjrt_plugin/mps_device.mm

@@ -26,7 +26,7 @@ Time per step (second half): 0.991
 
 ## What Works
 
-**All JAX operations are supported**, verified across 1964 tests covering all major categories:
+**All JAX operations are supported**, verified across 1974 tests covering all major categories:
 
 | Category | Status | Notes |
 |----------|--------|-------|
@@ -38,9 +38,9 @@ Time per step (second half): 0.991
 | FFT | Full | fft, ifft, rfft, irfft, fft2, ifft2 |
 | Sorting | Full | sort, argsort, top_k, unique, searchsorted |
 | Shape ops | Full | reshape, transpose, pad, gather, scatter, concatenate |
-| Bitwise ops | Full | and, or, xor, not, shifts, population_count |
+| Bitwise ops | Full | and, or, xor, not, shifts, population_count, clz |
 | Random | Full | normal, uniform, bernoulli, categorical, poisson, gamma, beta, etc. |
-| Type conversions | Full | float16/bfloat16/float32/int8-64/bool/complex64 |
+| Type conversions | Full | float16/bfloat16/float32/int8-64/bool/complex64, reduce_precision |
 | Control flow | Full | cond, switch, while_loop, fori_loop, scan, associative_scan |
 | Autodiff | Full | grad, jacobian, hessian, HVP, checkpoint, custom_jvp/vjp |
 | Transforms | Full | jit, vmap, pmap (single device) |

@@ -166,6 +166,18 @@ static ProcessResult HandleConvolution(HandlerContext& ctx) {
         return ProcessResult::Error("convolution: expected ConvolutionOp");
     }
 
+    // Check for complex inputs — MPS convolution crashes on complex types
+    for (unsigned i = 0; i < ctx.op->getNumOperands(); i++) {
+        auto operandType = ctx.op->getOperand(i).getType();
+        if (auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(operandType)) {
+            if (mlir::isa<mlir::ComplexType>(tensorType.getElementType())) {
+                return ProcessResult::Error(
+                    "convolution: MPS does not support complex convolution. "
+                    "Workaround: decompose into real/imaginary convolutions manually.");
+            }
+        }
+    }
+
     MPSGraphTensor* input = GetInputTensor(ctx, 0);
     MPSGraphTensor* kernel = GetInputTensor(ctx, 1);
     if (!input || !kernel)

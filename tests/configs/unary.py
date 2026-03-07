@@ -241,3 +241,49 @@ def make_unary_op_configs():
             differentiable_argnums=(),
         ),
     ]
+
+    # reduce_precision: truncate mantissa and/or exponent bits
+    def _reduce_precision(exponent_bits, mantissa_bits):
+        return lambda x: lax.reduce_precision(x, exponent_bits=exponent_bits,
+                                              mantissa_bits=mantissa_bits)
+
+    yield from [
+        OperationTestConfig(
+            _reduce_precision(8, 7),
+            numpy.asarray([1.0, 0.1, 3.14159, -2.5, 0.0, 1e-10, 1e10,
+                           float('nan'), float('inf'), float('-inf')],
+                          dtype=numpy.float32),
+            differentiable_argnums=(),
+            name="reduce_precision-bf16",
+        ),
+        OperationTestConfig(
+            _reduce_precision(5, 10),
+            numpy.asarray([1.0, 0.1, 3.14159, -2.5, 0.0, 1e-10, 1e10,
+                           float('nan'), float('inf'), float('-inf')],
+                          dtype=numpy.float32),
+            differentiable_argnums=(),
+            name="reduce_precision-f16",
+        ),
+        OperationTestConfig(
+            _reduce_precision(8, 23),
+            numpy.asarray([1.0, 0.1, 3.14159, -2.5, 0.0, 1e-10, 1e10],
+                          dtype=numpy.float32),
+            differentiable_argnums=(),
+            name="reduce_precision-identity",
+        ),
+        OperationTestConfig(
+            _reduce_precision(8, 0),
+            numpy.asarray([1.0, 0.5, 1.5, 2.5, 3.5, -1.5, -2.5],
+                          dtype=numpy.float32),
+            differentiable_argnums=(),
+            name="reduce_precision-no-mantissa",
+        ),
+        OperationTestConfig(
+            _reduce_precision(2, 1),
+            numpy.asarray([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, -1.0, -4.0,
+                           float('nan'), float('inf'), float('-inf')],
+                          dtype=numpy.float32),
+            differentiable_argnums=(),
+            name="reduce_precision-extreme",
+        ),
+    ]

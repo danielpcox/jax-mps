@@ -288,4 +288,156 @@ static ProcessResult HandleCbrt(HandlerContext& ctx) {
 }
 REGISTER_MPS_OP("stablehlo.cbrt", HandleCbrt);
 
+// reduce_precision: truncate mantissa and clamp exponent of floating-point values.
+// Implements the StableHLO reduce_precision op which reduces the precision of
+// float32 values to the specified number of exponent and mantissa bits.
+//
+// Algorithm (for float32: sign=1, exp=8, mantissa=23):
+//   1. Bitcast float → uint32
+//   2. If mantissa_bits < 23: round-to-nearest-even and truncate low mantissa bits
+//   3. If exponent_bits < 8: clamp exponent; overflow → ±inf, underflow → ±0
+//   4. Bitcast uint32 → float
+//   5. NaN passthrough (NaN stays NaN)
+static ProcessResult HandleReducePrecision(HandlerContext& ctx) {
+    MPSGraphTensor* input = GetInputTensor(ctx, 0);
+    if (!input)
+        return ProcessResult::Error("reduce_precision: missing input tensor");
+
+    auto rpOp = mlir::dyn_cast<mlir::stablehlo::ReducePrecisionOp>(ctx.op);
+    if (!rpOp)
+        return ProcessResult::Error("reduce_precision: failed to cast to ReducePrecisionOp");
+
+    int exponent_bits = static_cast<int>(rpOp.getExponentBits());
+    int mantissa_bits = static_cast<int>(rpOp.getMantissaBits());
+
+    // For float32: 8 exponent bits, 23 mantissa bits
+    // If both match, this is a no-op
+    if (exponent_bits >= 8 && mantissa_bits >= 23) {
+        return Result(ctx, input, "reduce_precision");
+    }
+
+    // For float16: 5 exponent bits, 10 mantissa bits
+    const int FLOAT32_EXP_BITS = 8;
+    const int FLOAT32_MANTISSA_BITS = 23;
+    const int FLOAT32_EXP_BIAS = 127;
+
+    MPSGraph* g = ctx.graph;
+
+    // Step 1: Bitcast float32 → int32 (reinterpret bits)
+    MPSGraphTensor* bits = [g reinterpretCastTensor:input toType:MPSDataTypeInt32 name:nil];
+
+    // Step 2: Round and truncate mantissa
+    if (mantissa_bits < FLOAT32_MANTISSA_BITS) {
+        int shift = FLOAT32_MANTISSA_BITS - mantissa_bits;
+
+        // Round to nearest even: add rounding bias, then truncate
+        // rounding_bias = (1 << (shift - 1)) - 1 + ((bits >> shift) & 1)
+        // The ((bits >> shift) & 1) term implements round-to-even
+        MPSGraphTensor* shiftConst = [g constantWithScalar:shift dataType:MPSDataTypeInt32];
+        MPSGraphTensor* shifted = [g bitwiseRightShiftWithPrimaryTensor:bits
+                                                        secondaryTensor:shiftConst
+                                                                   name:nil];
+        MPSGraphTensor* lsb = [g bitwiseANDWithPrimaryTensor:shifted
+                                              secondaryTensor:[g constantWithScalar:1
+                                                                           dataType:MPSDataTypeInt32]
+                                                         name:nil];
+        int base_bias = (1 << (shift - 1)) - 1;
+        MPSGraphTensor* baseBias = [g constantWithScalar:base_bias dataType:MPSDataTypeInt32];
+        MPSGraphTensor* roundingBias = [g additionWithPrimaryTensor:baseBias
+                                                    secondaryTensor:lsb
+                                                               name:nil];
+
+        // Add rounding bias (may overflow mantissa into exponent — that's correct behavior)
+        bits = [g additionWithPrimaryTensor:bits secondaryTensor:roundingBias name:nil];
+
+        // Truncate: zero out the low mantissa bits
+        int32_t mask = ~((1 << shift) - 1);
+        MPSGraphTensor* maskTensor = [g constantWithScalar:mask dataType:MPSDataTypeInt32];
+        bits = [g bitwiseANDWithPrimaryTensor:bits secondaryTensor:maskTensor name:nil];
+    }
+
+    // Step 3: Clamp exponent range
+    if (exponent_bits < FLOAT32_EXP_BITS) {
+        // Extract sign and magnitude
+        // Note: 0x80000000 overflows int32, use INT32_MIN (-2147483648)
+        MPSGraphTensor* signMask = [g constantWithScalar:INT32_MIN dataType:MPSDataTypeInt32];
+        MPSGraphTensor* signBit = [g bitwiseANDWithPrimaryTensor:bits
+                                                 secondaryTensor:signMask
+                                                            name:nil];
+        MPSGraphTensor* magMask = [g constantWithScalar:0x7FFFFFFF dataType:MPSDataTypeInt32];
+        MPSGraphTensor* magnitude = [g bitwiseANDWithPrimaryTensor:bits
+                                                   secondaryTensor:magMask
+                                                              name:nil];
+
+        // The reduced format has exponent range [-2^(e-1)+2, 2^(e-1)-1] (biased: [1, 2^e - 2])
+        // In float32 biased exponent, the max representable biased exponent is:
+        //   FLOAT32_EXP_BIAS + (2^(exponent_bits-1) - 1)
+        // The min representable biased exponent is:
+        //   FLOAT32_EXP_BIAS - (2^(exponent_bits-1) - 2)
+        int max_exp = (1 << (exponent_bits - 1)) - 1;   // e.g., 15 for 5-bit exponent
+        int min_exp = -(1 << (exponent_bits - 1)) + 2;  // e.g., -14 for 5-bit exponent
+
+        // In float32 biased representation:
+        int max_biased = FLOAT32_EXP_BIAS + max_exp;  // e.g., 142 for 5-bit
+        int min_biased = FLOAT32_EXP_BIAS + min_exp;  // e.g., 113 for 5-bit
+
+        // Max representable magnitude (max exponent, all mantissa bits 1):
+        // biased_exp << 23 | mantissa_mask
+        int32_t max_magnitude = (max_biased << FLOAT32_MANTISSA_BITS) | 0x7FFFFF;
+        // Min representable magnitude (min normal exponent, mantissa 0):
+        int32_t min_magnitude = (min_biased << FLOAT32_MANTISSA_BITS);
+
+        MPSGraphTensor* maxMag = [g constantWithScalar:max_magnitude dataType:MPSDataTypeInt32];
+        MPSGraphTensor* minMag = [g constantWithScalar:min_magnitude dataType:MPSDataTypeInt32];
+
+        // Detect NaN: magnitude > inf magnitude (0x7F800000) — must preserve NaN
+        MPSGraphTensor* inf = [g constantWithScalar:0x7F800000 dataType:MPSDataTypeInt32];
+        MPSGraphTensor* isNaN = [g greaterThanWithPrimaryTensor:magnitude
+                                                secondaryTensor:inf
+                                                           name:nil];
+
+        // Overflow: magnitude > max → set to inf (NaN excluded below)
+        MPSGraphTensor* isOverflow = [g greaterThanWithPrimaryTensor:magnitude
+                                                     secondaryTensor:maxMag
+                                                                name:nil];
+
+        // Underflow: 0 < magnitude < min → set to 0
+        MPSGraphTensor* zero = [g constantWithScalar:0 dataType:MPSDataTypeInt32];
+        MPSGraphTensor* isNonZeroUnderflow = [g logicalANDWithPrimaryTensor:
+                                                [g greaterThanWithPrimaryTensor:magnitude
+                                                                secondaryTensor:zero
+                                                                           name:nil]
+                                                            secondaryTensor:
+                                                [g lessThanWithPrimaryTensor:magnitude
+                                                                secondaryTensor:minMag
+                                                                           name:nil]
+                                                                       name:nil];
+
+        // Apply: overflow → inf, underflow → 0, else magnitude
+        magnitude = [g selectWithPredicateTensor:isOverflow
+                              truePredicateTensor:inf
+                             falsePredicateTensor:magnitude
+                                             name:nil];
+        magnitude = [g selectWithPredicateTensor:isNonZeroUnderflow
+                              truePredicateTensor:zero
+                             falsePredicateTensor:magnitude
+                                             name:nil];
+
+        // Recombine sign and magnitude
+        magnitude = [g selectWithPredicateTensor:isNaN
+                              truePredicateTensor:[g bitwiseANDWithPrimaryTensor:bits
+                                                                 secondaryTensor:magMask
+                                                                            name:nil]
+                             falsePredicateTensor:magnitude
+                                             name:nil];
+        bits = [g bitwiseORWithPrimaryTensor:signBit secondaryTensor:magnitude name:nil];
+    }
+
+    // Step 4: Bitcast int32 → float32
+    MPSGraphTensor* result = [g reinterpretCastTensor:bits toType:MPSDataTypeFloat32 name:nil];
+
+    return Result(ctx, result, "reduce_precision");
+}
+REGISTER_MPS_OP("stablehlo.reduce_precision", HandleReducePrecision);
+
 }  // namespace jax_mps

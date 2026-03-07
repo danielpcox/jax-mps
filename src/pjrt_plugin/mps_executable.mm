@@ -1080,6 +1080,7 @@ ExecutionResult MpsExecutable::Execute(const std::vector<MpsBuffer*>& inputs, Mp
         // for them so downstream code doesn't encounter nil Metal buffers.
 
         // Handle identity functions (no steps, but outputs reference inputs)
+        // Share the input buffer directly — PJRT buffers are immutable so this is safe.
         if (plan_->steps.empty() && !plan_->output_slots.empty() && !inputs.empty()) {
             ExecutionResult result;
             for (size_t i = 0; i < plan_->output_slots.size(); i++) {
@@ -1096,30 +1097,18 @@ ExecutionResult MpsExecutable::Execute(const std::vector<MpsBuffer*>& inputs, Mp
                     return ExecutionResult::Error("Identity function with unmapped output slot");
                 }
                 MpsBuffer* input = inputs[input_idx];
-                size_t byte_size = input->byte_size();
-                id<MTLBuffer> src = (__bridge id<MTLBuffer>)input->metal_buffer();
-                if (!src) {
+                void* metal_buf = input->metal_buffer();
+                if (!metal_buf) {
                     return ExecutionResult::Error("Identity function input has no Metal buffer");
-                }
-                size_t alloc_size = byte_size > 0 ? byte_size : 1;
-                id<MTLBuffer> dst = byte_size > 0
-                    ? [mtl_device newBufferWithBytes:src.contents
-                                              length:alloc_size
-                                             options:MTLResourceStorageModeShared]
-                    : [mtl_device newBufferWithLength:alloc_size
-                                             options:MTLResourceStorageModeShared];
-                if (!dst) {
-                    return ExecutionResult::Error("Failed to allocate buffer for identity output");
                 }
 
                 auto tensorType = mlir::cast<mlir::RankedTensorType>(plan_->return_types[i]);
                 std::vector<int64_t> dims(tensorType.getShape().begin(),
                                           tensorType.getShape().end());
                 int dtype = MlirTypeToPjrtDtype(tensorType.getElementType());
+                // Share the same MTLBuffer — MpsBuffer's constructor retains it.
                 result.buffers.push_back(
-                    std::make_unique<MpsBuffer>(device, (__bridge void*)dst, dtype, dims));
-                // MpsBuffer retains, release our +1 from newBufferWithBytes
-                CFRelease((__bridge CFTypeRef)dst);
+                    std::make_unique<MpsBuffer>(device, metal_buf, dtype, dims));
             }
             return result;
         }
@@ -1415,7 +1404,8 @@ ExecutionResult MpsExecutable::Execute(const std::vector<MpsBuffer*>& inputs, Mp
 
             std::vector<int64_t> dims(tensorType.getShape().begin(), tensorType.getShape().end());
 
-            // If this slot came directly from an input (identity / pass-through), copy it.
+            // If this slot came directly from an input (identity / pass-through),
+            // share the buffer instead of copying. PJRT buffers are immutable.
             bool is_input_slot = false;
             for (auto in_slot : plan_->input_slots) {
                 if (in_slot == slot) {
@@ -1424,23 +1414,9 @@ ExecutionResult MpsExecutable::Execute(const std::vector<MpsBuffer*>& inputs, Mp
                 }
             }
             if (is_input_slot) {
-                size_t byte_size = plan_->slots[slot].byte_size;
-                // For zero-sized tensors, allocate a 1-byte placeholder
-                size_t alloc_size = byte_size > 0 ? byte_size : 1;
-                id<MTLBuffer> copy = byte_size > 0
-                    ? [mtl_device newBufferWithBytes:buf.contents
-                                              length:alloc_size
-                                             options:MTLResourceStorageModeShared]
-                    : [mtl_device newBufferWithLength:alloc_size
-                                             options:MTLResourceStorageModeShared];
-                if (!copy) {
-                    release_intermediates(false);
-                    return ExecutionResult::Error("Failed to allocate output buffer copy");
-                }
+                // Share the same MTLBuffer — MpsBuffer's constructor retains it.
                 result.buffers.push_back(
-                    std::make_unique<MpsBuffer>(device, (__bridge void*)copy, dtype, dims));
-                // MpsBuffer retains, release our +1 from newBufferWithBytes
-                CFRelease((__bridge CFTypeRef)copy);
+                    std::make_unique<MpsBuffer>(device, (__bridge void*)buf, dtype, dims));
             } else {
                 result.buffers.push_back(
                     std::make_unique<MpsBuffer>(device, (__bridge void*)buf, dtype, dims));

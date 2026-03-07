@@ -44,6 +44,18 @@ static ProcessResult HandleSort(HandlerContext& ctx) {
         return ProcessResult::Error("Expected stablehlo.sort");
     }
 
+    // Check for complex inputs — MPS sort crashes on complex types
+    for (unsigned i = 0; i < ctx.op->getNumOperands(); i++) {
+        auto operandType = ctx.op->getOperand(i).getType();
+        if (auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(operandType)) {
+            if (mlir::isa<mlir::ComplexType>(tensorType.getElementType())) {
+                return ProcessResult::Error(
+                    "sort: MPS does not support sorting complex arrays. "
+                    "Workaround: sort real and imaginary parts separately.");
+            }
+        }
+    }
+
     auto dimAttr = ctx.op->getAttrOfType<mlir::IntegerAttr>("dimension");
     if (!dimAttr) {
         return ProcessResult::Error("stablehlo.sort missing dimension attribute");
