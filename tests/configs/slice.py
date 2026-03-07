@@ -299,4 +299,50 @@ def make_slice_op_configs():
                 differentiable_argnums=(0,),
                 name="scatter_vmap_2d_diagonal",
             ),
+            # Single-index slice gather: x[:, :-1] via gather (stablehlo.gather with
+            # single start index, no collapsed dims, full-size offset dims)
+            OperationTestConfig(
+                lambda x: x[:, :-1],
+                lambda key: random.normal(key, (4, 16)),
+                name="slice_gather_trailing",
+            ),
+            # Slice gather with reshape: x[:, :-1, None]
+            OperationTestConfig(
+                lambda x: x[:, :-1, None],
+                lambda key: random.normal(key, (4, 16)),
+                differentiable_argnums=(),
+                name="slice_gather_unsqueeze",
+            ),
+            # Embedding lookup via vmap (slice-gather pattern):
+            # operand [V, D], indices [N, 2], offset_dims=[1,2], collapsed=[]
+            OperationTestConfig(
+                lambda w, idx: jax.vmap(lambda i: w[i])(idx),
+                lambda key: random.normal(key, (10, 4)),
+                lambda key: random.randint(key, (3,), 0, 10),
+                name="vmap_embedding_gather",
+            ),
+            # Embedding gradient via vmap (slice-scatter pattern):
+            # scatter-add with multi-index, no inserted_window_dims
+            OperationTestConfig(
+                lambda w, idx: jnp.sum(jax.vmap(lambda i: w[i])(idx) ** 2),
+                lambda key: random.normal(key, (10, 4)),
+                lambda key: random.randint(key, (3,), 0, 10),
+                differentiable_argnums=(0,),
+                name="vmap_embedding_grad",
+            ),
+            # Batched embedding via double vmap
+            OperationTestConfig(
+                lambda w, idx: jax.vmap(jax.vmap(lambda i: w[i]))(idx),
+                lambda key: random.normal(key, (100, 8)),
+                lambda key: random.randint(key, (4, 16), 0, 100),
+                name="double_vmap_embedding_gather",
+            ),
+            # Batched embedding gradient via double vmap
+            OperationTestConfig(
+                lambda w, idx: jnp.sum(jax.vmap(jax.vmap(lambda i: w[i]))(idx) ** 2),
+                lambda key: random.normal(key, (100, 8)),
+                lambda key: random.randint(key, (4, 16), 0, 100),
+                differentiable_argnums=(0,),
+                name="double_vmap_embedding_grad",
+            ),
         ]
