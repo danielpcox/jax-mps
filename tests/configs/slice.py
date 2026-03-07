@@ -345,4 +345,26 @@ def make_slice_op_configs():
                 differentiable_argnums=(0,),
                 name="double_vmap_embedding_grad",
             ),
+            # Uncollapsed point gather (searchsorted pattern):
+            # operand [5], indices [6,1], offset_dims=[1], collapsed=[], slice_sizes=[1]
+            OperationTestConfig(
+                lambda x, vals: jnp.searchsorted(x, vals),
+                numpy.array([1.0, 3.0, 5.0, 7.0, 9.0], dtype=numpy.float32),
+                numpy.array([0.0, 2.0, 4.0, 6.0, 8.0, 10.0], dtype=numpy.float32),
+                differentiable_argnums=(),
+                name="searchsorted_basic",
+            ),
+            # Gradient of last-token cross-entropy (dynamic-update-slice scatter):
+            # Tests scatter with update_window_dims covering all dims, N=1 scatter point
+            OperationTestConfig(
+                lambda logits, labels: jnp.mean(
+                    jax.vmap(
+                        lambda l, lab: -jax.nn.log_softmax(l[-1])[lab]
+                    )(logits, labels)
+                ),
+                lambda key: random.normal(key, (4, 3, 20)),
+                lambda key: random.randint(key, (4,), 0, 20),
+                differentiable_argnums=(0,),
+                name="last_token_ce_grad",
+            ),
         ]
