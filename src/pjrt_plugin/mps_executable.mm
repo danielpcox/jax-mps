@@ -126,6 +126,35 @@ static size_t ByteSizeFromType(mlir::Type type) {
     return total;
 }
 
+// Check if a type has any zero-sized dimension (MPS cannot handle these)
+static bool IsZeroSizedType(mlir::Type type) {
+    auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(type);
+    if (!tensorType)
+        return false;
+    for (int64_t dim : tensorType.getShape()) {
+        if (dim == 0) return true;
+    }
+    return false;
+}
+
+// Check if an operation produces any zero-sized result
+static bool HasZeroSizedResult(mlir::Operation* op) {
+    for (unsigned i = 0; i < op->getNumResults(); i++) {
+        if (IsZeroSizedType(op->getResult(i).getType()))
+            return true;
+    }
+    return false;
+}
+
+// Check if an operation has any zero-sized operand
+static bool HasZeroSizedOperand(mlir::Operation* op) {
+    for (unsigned i = 0; i < op->getNumOperands(); i++) {
+        if (IsZeroSizedType(op->getOperand(i).getType()))
+            return true;
+    }
+    return false;
+}
+
 // Find the handler for an operation
 static const OpHandler* FindHandler(mlir::Operation* op) {
     std::string op_name = op->getName().getStringRef().str();
@@ -220,6 +249,98 @@ static ProcessResult processOperations(HandlerContext& ctx, mlir::Block& block) 
             }
             continue;
         }
+
+        // Handle zero-sized tensors: MPS cannot process them, so we either
+        // skip the op (registering nullptr) or handle it specially.
+        // Key cases:
+        //   - constants: the handler creates a fake [1] tensor (fall through)
+        //   - scatter: the handler detects identity patterns (fall through)
+        //   - concatenate: drop zero-sized inputs, concat the rest
+        //   - pad: zero-sized input with padding → fill with pad value
+        //   - other ops with zero-sized results: register nullptr and skip
+        if (HasZeroSizedResult(op) || HasZeroSizedOperand(op)) {
+            bool handled = false;
+
+            // Constants with zero-sized results: the handler creates a fake [1]
+            // tensor that downstream ops (like scatter) can use safely.
+            if (mlir::isa<mlir::stablehlo::ConstantOp>(op)) {
+                goto normal_handler;
+            }
+
+            if (!HasZeroSizedResult(op)) {
+                // concatenate: drop zero-sized inputs
+                if (auto concatOp = mlir::dyn_cast<mlir::stablehlo::ConcatenateOp>(op)) {
+                    int64_t concatDim = concatOp.getDimension();
+                    NSMutableArray<MPSGraphTensor*>* nonZeroInputs = [NSMutableArray array];
+                    for (unsigned i = 0; i < op->getNumOperands(); i++) {
+                        if (!IsZeroSizedType(op->getOperand(i).getType())) {
+                            MPSGraphTensor* t = GetTensor(ctx.values, op->getOperand(i));
+                            if (t) [nonZeroInputs addObject:t];
+                        }
+                    }
+                    MPSGraphTensor* concatResult = nil;
+                    if (nonZeroInputs.count == 1) {
+                        concatResult = nonZeroInputs[0];
+                    } else if (nonZeroInputs.count > 1) {
+                        concatResult = [ctx.graph concatTensors:nonZeroInputs
+                                                      dimension:(NSInteger)concatDim
+                                                           name:nil];
+                    }
+                    if (concatResult) {
+                        SetOutputTensor(ctx.values, op, concatResult);
+                        handled = true;
+                    }
+                }
+
+                // pad: zero-sized operand padded to non-zero result → fill with pad value
+                if (!handled) {
+                    if (auto padOp = mlir::dyn_cast<mlir::stablehlo::PadOp>(op)) {
+                        if (IsZeroSizedType(padOp.getOperand().getType())) {
+                            // Result is entirely padding value, broadcast to output shape
+                            MPSGraphTensor* padValue =
+                                GetTensor(ctx.values, padOp.getPaddingValue());
+                            if (padValue) {
+                                NSArray<NSNumber*>* outputShape = GetOutputShape(op);
+                                MPSGraphTensor* result =
+                                    [ctx.graph broadcastTensor:padValue
+                                                      toShape:outputShape
+                                                         name:nil];
+                                SetOutputTensor(ctx.values, op, result);
+                                handled = true;
+                            }
+                        }
+                    }
+                }
+
+                // For ops with zero-sized operands but non-zero results
+                // (including scatter), fall through to the normal handler if
+                // all operands have valid tensors.  The handlers already cope
+                // with the fake [1] tensors produced by the constant handler.
+                if (!handled) {
+                    bool all_operands_available = true;
+                    for (unsigned i = 0; i < op->getNumOperands(); i++) {
+                        if (!GetTensor(ctx.values, op->getOperand(i))) {
+                            all_operands_available = false;
+                            break;
+                        }
+                    }
+                    if (all_operands_available) {
+                        goto normal_handler;
+                    }
+                }
+            }
+
+            if (!handled) {
+                // For ops that produce zero-sized results: register nullptr and skip.
+                for (unsigned i = 0; i < op->getNumResults(); i++) {
+                    ctx.values[op->getResult(i).getAsOpaquePointer()] = nullptr;
+                }
+                MPS_LOG_DEBUG("Skipping zero-sized op: %s\n", op_name.c_str());
+            }
+            continue;
+        }
+
+        normal_handler:
 
         // Look up handler in registry
         const OpHandler* handler = FindHandler(op);
@@ -611,6 +732,14 @@ bool MpsExecutable::BuildExecutionPlan() {
                         return;  // Already created
                     }
 
+                    // Skip zero-sized tensors — MPS cannot create placeholders for them.
+                    // They are tracked as nullptr in the value map.
+                    if (IsZeroSizedType(operand.getType())) {
+                        values[key] = nullptr;
+                        created_ph.insert(key);
+                        return;
+                    }
+
                     // Get shape and dtype from the MLIR type
                     NSArray<NSNumber*>* shape = GetShapeFromType(operand.getType());
                     auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(operand.getType());
@@ -650,6 +779,92 @@ bool MpsExecutable::BuildExecutionPlan() {
                         std::string op_name = op->getName().getStringRef().str();
                         MPS_LOG_DEBUG("BuildExecutionPlan: processing op %d: %s\n", processed++,
                                       op_name.c_str());
+
+                        // Handle zero-sized ops (same logic as processOperations)
+                        if (HasZeroSizedResult(op) || HasZeroSizedOperand(op)) {
+                            bool handled = false;
+
+                            // Constants: handler creates fake [1] tensor for empty constants
+                            if (mlir::isa<mlir::stablehlo::ConstantOp>(op)) {
+                                goto pass2_normal_handler;
+                            }
+
+                            if (!HasZeroSizedResult(op)) {
+                                // concatenate: drop zero-sized inputs
+                                if (auto concatOp =
+                                        mlir::dyn_cast<mlir::stablehlo::ConcatenateOp>(op)) {
+                                    int64_t concatDim = concatOp.getDimension();
+                                    NSMutableArray<MPSGraphTensor*>* nonZeroInputs =
+                                        [NSMutableArray array];
+                                    for (unsigned i = 0; i < op->getNumOperands(); i++) {
+                                        if (!IsZeroSizedType(op->getOperand(i).getType())) {
+                                            MPSGraphTensor* t =
+                                                GetTensor(values, op->getOperand(i));
+                                            if (t) [nonZeroInputs addObject:t];
+                                        }
+                                    }
+                                    MPSGraphTensor* concatResult = nil;
+                                    if (nonZeroInputs.count == 1) {
+                                        concatResult = nonZeroInputs[0];
+                                    } else if (nonZeroInputs.count > 1) {
+                                        concatResult = [graph concatTensors:nonZeroInputs
+                                                                  dimension:(NSInteger)concatDim
+                                                                       name:nil];
+                                    }
+                                    if (concatResult) {
+                                        SetOutputTensor(values, op, concatResult);
+                                        handled = true;
+                                    }
+                                }
+
+                                // pad: zero-sized operand → fill with pad value
+                                if (!handled) {
+                                    if (auto padOp =
+                                            mlir::dyn_cast<mlir::stablehlo::PadOp>(op)) {
+                                        if (IsZeroSizedType(padOp.getOperand().getType())) {
+                                            MPSGraphTensor* padValue =
+                                                GetTensor(values, padOp.getPaddingValue());
+                                            if (padValue) {
+                                                NSArray<NSNumber*>* outputShape =
+                                                    GetOutputShape(op);
+                                                MPSGraphTensor* result =
+                                                    [graph broadcastTensor:padValue
+                                                                  toShape:outputShape
+                                                                     name:nil];
+                                                SetOutputTensor(values, op, result);
+                                                handled = true;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Fall through for ops (including scatter) with all
+                                // operands available.  Handlers cope with fake [1]
+                                // tensors from the constant handler.
+                                if (!handled) {
+                                    bool all_operands_available = true;
+                                    for (unsigned i = 0; i < op->getNumOperands(); i++) {
+                                        if (!GetTensor(values, op->getOperand(i))) {
+                                            all_operands_available = false;
+                                            break;
+                                        }
+                                    }
+                                    if (all_operands_available) {
+                                        goto pass2_normal_handler;
+                                    }
+                                }
+                            }
+
+                            if (!handled) {
+                                for (unsigned i = 0; i < op->getNumResults(); i++) {
+                                    values[op->getResult(i).getAsOpaquePointer()] = nullptr;
+                                }
+                                MPS_LOG_DEBUG("Skipping zero-sized op: %s\n", op_name.c_str());
+                            }
+                            continue;
+                        }
+
+                        pass2_normal_handler:
 
                         if (auto callOp = mlir::dyn_cast<mlir::func::CallOp>(op)) {
                             HandlerContext callCtx(graph, op, values, *module_, 0,
@@ -761,14 +976,9 @@ ExecutionResult MpsExecutable::Execute(const std::vector<MpsBuffer*>& inputs, Mp
                                           std::to_string(inputs.size()));
         }
 
-        // Check for zero-sized tensors (MPS framework doesn't support them)
-        for (size_t i = 0; i < plan_->slots.size(); i++) {
-            if (plan_->slots[i].byte_size == 0) {
-                return ExecutionResult::Error("Zero-sized tensors are not supported by MPS. "
-                                              "Tensor at slot " +
-                                              std::to_string(i) + " has size 0 bytes.");
-            }
-        }
+        // Zero-sized slots are handled at compilation time by skipping the
+        // corresponding MPS graph ops.  We allocate 1-byte placeholder buffers
+        // for them so downstream code doesn't encounter nil Metal buffers.
 
         // Handle identity functions (no steps, but outputs reference inputs)
         if (plan_->steps.empty() && !plan_->output_slots.empty() && !inputs.empty()) {
@@ -792,9 +1002,13 @@ ExecutionResult MpsExecutable::Execute(const std::vector<MpsBuffer*>& inputs, Mp
                 if (!src) {
                     return ExecutionResult::Error("Identity function input has no Metal buffer");
                 }
-                id<MTLBuffer> dst = [mtl_device newBufferWithBytes:src.contents
-                                                            length:byte_size
-                                                           options:MTLResourceStorageModeShared];
+                size_t alloc_size = byte_size > 0 ? byte_size : 1;
+                id<MTLBuffer> dst = byte_size > 0
+                    ? [mtl_device newBufferWithBytes:src.contents
+                                              length:alloc_size
+                                             options:MTLResourceStorageModeShared]
+                    : [mtl_device newBufferWithLength:alloc_size
+                                             options:MTLResourceStorageModeShared];
                 if (!dst) {
                     return ExecutionResult::Error("Failed to allocate buffer for identity output");
                 }
@@ -860,10 +1074,20 @@ ExecutionResult MpsExecutable::Execute(const std::vector<MpsBuffer*>& inputs, Mp
             }
         };
 
+        // Pre-allocate zero-sized slots with 1-byte placeholders so they are never nil
+        for (size_t i = 0; i < plan_->slots.size(); i++) {
+            if (plan_->slots[i].byte_size == 0 && !slot_bufs[i]) {
+                id<MTLBuffer> buf = [mtl_device newBufferWithLength:1
+                                                            options:MTLResourceStorageModeShared];
+                slot_bufs[i] = buf;
+                allocated_slots.push_back((SlotId)i);
+            }
+        }
+
         for (const auto& gs : plan_->graph_steps) {
             for (const auto& [slot, tensor] : gs.targets) {
                 if (slot_bufs[slot])
-                    continue;  // Already assigned (input slot).
+                    continue;  // Already assigned (input slot or zero-sized placeholder).
                 size_t byte_size = plan_->slots[slot].byte_size;
                 id<MTLBuffer> buf = [mtl_device newBufferWithLength:byte_size
                                                             options:MTLResourceStorageModeShared];
@@ -1011,6 +1235,28 @@ ExecutionResult MpsExecutable::Execute(const std::vector<MpsBuffer*>& inputs, Mp
                 MPS_LOG_DEBUG("  Graph step %zu complete\n", step_idx);
             } else {
                 // ----- Native step -----
+                auto& ns = plan_->native_steps[step.index];
+
+                // Skip native ops with zero-sized outputs (e.g., Cholesky on batch=0).
+                // Allocate 1-byte placeholder buffers for each output slot.
+                bool has_zero_output = false;
+                for (auto slot : ns.output_slots) {
+                    if (plan_->slots[slot].byte_size == 0) {
+                        has_zero_output = true;
+                        break;
+                    }
+                }
+                if (has_zero_output) {
+                    for (auto slot : ns.output_slots) {
+                        if (!slot_bufs[slot]) {
+                            slot_bufs[slot] = [mtl_device newBufferWithLength:1
+                                                                     options:MTLResourceStorageModeShared];
+                            allocated_slots.push_back(slot);
+                        }
+                    }
+                    continue;
+                }
+
                 // Flush pending GPU work so native handlers can read input data.
                 // This is required for LAPACK-based handlers (QR, eigh) that access
                 // buffer contents on CPU, and harmless for MPS-native handlers.
@@ -1018,8 +1264,6 @@ ExecutionResult MpsExecutable::Execute(const std::vector<MpsBuffer*>& inputs, Mp
                     release_intermediates(false);
                     return ExecutionResult::Error("Failed to flush command buffer before native step");
                 }
-
-                auto& ns = plan_->native_steps[step.index];
 
                 std::vector<id<MTLBuffer>> input_bufs;
                 input_bufs.reserve(ns.input_slots.size());
@@ -1082,9 +1326,14 @@ ExecutionResult MpsExecutable::Execute(const std::vector<MpsBuffer*>& inputs, Mp
             }
             if (is_input_slot) {
                 size_t byte_size = plan_->slots[slot].byte_size;
-                id<MTLBuffer> copy = [mtl_device newBufferWithBytes:buf.contents
-                                                             length:byte_size
-                                                            options:MTLResourceStorageModeShared];
+                // For zero-sized tensors, allocate a 1-byte placeholder
+                size_t alloc_size = byte_size > 0 ? byte_size : 1;
+                id<MTLBuffer> copy = byte_size > 0
+                    ? [mtl_device newBufferWithBytes:buf.contents
+                                              length:alloc_size
+                                             options:MTLResourceStorageModeShared]
+                    : [mtl_device newBufferWithLength:alloc_size
+                                             options:MTLResourceStorageModeShared];
                 if (!copy) {
                     release_intermediates(false);
                     return ExecutionResult::Error("Failed to allocate output buffer copy");

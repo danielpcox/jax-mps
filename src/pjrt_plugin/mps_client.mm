@@ -191,7 +191,12 @@ std::unique_ptr<MpsBuffer> MpsClient::BufferFromHostBuffer(const void* data, int
     id<MTLDevice> mtl_device = (__bridge id<MTLDevice>)metal_device_;
     id<MTLBuffer> buffer = nil;
 
-    if (IsContiguous(dims, byte_strides, element_size)) {
+    if (byte_size == 0) {
+        // Zero-sized tensor: allocate a 1-byte placeholder buffer.
+        // MPS cannot operate on these directly, but the compilation pipeline
+        // handles them by skipping the corresponding graph ops.
+        buffer = [mtl_device newBufferWithLength:1 options:MTLResourceStorageModeShared];
+    } else if (IsContiguous(dims, byte_strides, element_size)) {
         // Data is contiguous, create buffer directly from source
         buffer = [mtl_device newBufferWithBytes:data
                                          length:byte_size

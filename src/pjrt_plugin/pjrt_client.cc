@@ -262,15 +262,9 @@ PJRT_Error* MPS_Client_BufferFromHostBuffer(PJRT_Client_BufferFromHostBuffer_Arg
         byte_strides.assign(args->byte_strides, args->byte_strides + args->num_byte_strides);
     }
 
-    // Check for zero-sized tensors (any dimension is 0)
-    for (size_t i = 0; i < dims.size(); i++) {
-        if (dims[i] == 0) {
-            return MakeError(
-                "Zero-sized tensors are not supported by MPS. "
-                "Dimension " +
-                std::to_string(i) + " has size 0.");
-        }
-    }
+    // Zero-sized tensors are allowed — we allocate a 1-byte placeholder buffer.
+    // MPS cannot operate on them directly, but they are handled at compilation
+    // time by skipping the corresponding graph ops.
 
     auto mps_buffer = client->client->BufferFromHostBuffer(
         args->data, static_cast<int>(args->type), dims, byte_strides,

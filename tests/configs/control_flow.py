@@ -387,4 +387,22 @@ def make_control_flow_op_configs():
                 differentiable_argnums=(),
                 name="lax.while_loop.with_switch",
             ),
+            # ==================== associative_scan ====================
+            # Tests zero-sized tensor handling (associative_scan generates
+            # empty slices internally)
+            OperationTestConfig(
+                lambda x: lax.associative_scan(lax.add, x),
+                lambda key: random.normal(key, (8,)),
+                name="associative_scan_add_1d",
+            ),
+            OperationTestConfig(
+                lambda x: lax.associative_scan(lax.add, x, axis=0),
+                lambda key: random.normal(key, (4, 3)),
+                name="associative_scan_add_2d",
+            ),
+            OperationTestConfig(
+                lambda x: lax.associative_scan(lax.mul, x),
+                lambda key: random.uniform(key, (5,), minval=0.5, maxval=1.5),
+                name="associative_scan_mul",
+            ),
         ]
