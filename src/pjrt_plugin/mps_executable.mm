@@ -351,8 +351,91 @@ static ProcessResult processOperations(HandlerContext& ctx, mlir::Block& block) 
                                         OpRegistry::ListRegistered());
         }
 
-        // Native ops should not appear in graph processing - they're handled separately
+        // Native ops in control flow branches: provide graph-level fallback.
+        // These can't be segmented out because they're inside case/while bodies.
         if (handler->is_native()) {
+            // triangular_solve fallback: extract triangular part, invert, multiply
+            if (op_name == "stablehlo.triangular_solve") {
+                MPSGraphTensor* A = GetTensor(ctx.values, op->getOperand(0));
+                MPSGraphTensor* B = GetTensor(ctx.values, op->getOperand(1));
+                if (!A || !B) {
+                    return ProcessResult::Error(
+                        "triangular_solve (graph fallback): missing input tensors");
+                }
+                auto triSolveOp =
+                    mlir::dyn_cast<mlir::stablehlo::TriangularSolveOp>(op);
+                bool leftSide = triSolveOp ? triSolveOp.getLeftSide() : true;
+                bool lower = triSolveOp ? triSolveOp.getLower() : true;
+                bool unitDiagonal = triSolveOp ? triSolveOp.getUnitDiagonal() : false;
+                auto transposeA = triSolveOp ? triSolveOp.getTransposeA()
+                                             : mlir::stablehlo::Transpose::NO_TRANSPOSE;
+                bool transpose = (transposeA == mlir::stablehlo::Transpose::TRANSPOSE ||
+                                  transposeA == mlir::stablehlo::Transpose::ADJOINT);
+
+                // Extract triangular part using bandPart
+                // bandPart(tensor, numLower, numUpper) extracts a band:
+                //   lower=true:  numLower=-1, numUpper=0 (lower triangle)
+                //   lower=false: numLower=0,  numUpper=-1 (upper triangle)
+                MPSGraphTensor* tri;
+                if (lower) {
+                    tri = [ctx.graph bandPartWithTensor:A
+                                              numLower:-1
+                                              numUpper:0
+                                                  name:nil];
+                } else {
+                    tri = [ctx.graph bandPartWithTensor:A
+                                              numLower:0
+                                              numUpper:-1
+                                                  name:nil];
+                }
+
+                // Handle unit diagonal: set diagonal to 1
+                if (unitDiagonal) {
+                    // Get shape for eye matrix
+                    NSArray<NSNumber*>* shape = tri.shape;
+                    NSInteger n = [shape[shape.count - 1] integerValue];
+                    MPSGraphTensor* eye = [ctx.graph constantWithScalar:1.0
+                                                                  shape:shape
+                                                               dataType:tri.dataType];
+                    // Create identity: only diagonal elements are 1
+                    MPSGraphTensor* identity = [ctx.graph bandPartWithTensor:eye
+                                                                   numLower:0
+                                                                   numUpper:0
+                                                                       name:nil];
+                    // Zero out existing diagonal and add identity
+                    MPSGraphTensor* offDiag = [ctx.graph subtractionWithPrimaryTensor:tri
+                                                                     secondaryTensor:[ctx.graph bandPartWithTensor:tri numLower:0 numUpper:0 name:nil]
+                                                                                name:nil];
+                    tri = [ctx.graph additionWithPrimaryTensor:offDiag
+                                              secondaryTensor:identity
+                                                         name:nil];
+                }
+
+                // Handle transpose
+                if (transpose) {
+                    tri = [ctx.graph transposeTensor:tri
+                                          dimension:tri.shape.count - 2
+                                      withDimension:tri.shape.count - 1
+                                               name:nil];
+                }
+
+                // Compute inv(tri) @ B
+                MPSGraphTensor* tri_inv =
+                    [ctx.graph inverseOfTensor:tri name:nil];
+                MPSGraphTensor* result;
+                if (leftSide) {
+                    result = [ctx.graph matrixMultiplicationWithPrimaryTensor:tri_inv
+                                                            secondaryTensor:B
+                                                                       name:nil];
+                } else {
+                    result = [ctx.graph matrixMultiplicationWithPrimaryTensor:B
+                                                            secondaryTensor:tri_inv
+                                                                       name:nil];
+                }
+                ctx.values[op->getResult(0).getAsOpaquePointer()] = result;
+                continue;
+            }
+
             return ProcessResult::Error("Native op '" + op_name +
                                         "' encountered during graph building - "
                                         "this should have been handled by segmented execution");
@@ -391,72 +474,85 @@ bool MpsExecutable::BuildExecutionPlan() {
         // native ops inside callees would be missed.  We splice the callee's
         // operations directly into the entry block, avoiding the MLIR inliner
         // pass (which requires DialectInlinerInterface on every dialect).
+        //
+        // We walk ALL blocks in the function (including nested regions of
+        // control flow ops like case/while) to find func.call ops that need
+        // inlining. This handles cases like expm which calls solve inside
+        // a stablehlo.case branch.
         {
+            auto shouldInlineCallee = [&](mlir::func::FuncOp callee) -> bool {
+                bool result = false;
+                callee.walk([&](mlir::Operation* inner) {
+                    if (result) return;
+                    std::string inner_name = inner->getName().getStringRef().str();
+                    const OpHandler* h = OpRegistry::Find(inner_name);
+                    if (h && h->is_native()) {
+                        result = true;
+                    } else if (mlir::dyn_cast<mlir::func::CallOp>(inner)) {
+                        result = true;
+                    } else if (auto ccOp = mlir::dyn_cast<mlir::stablehlo::CustomCallOp>(inner)) {
+                        const OpHandler* ccH =
+                            CustomCallRegistry::Find(ccOp.getCallTargetName().str());
+                        if (ccH && ccH->is_native()) {
+                            result = true;
+                        }
+                    }
+                });
+                return result;
+            };
+
+            auto inlineCallOp = [&](mlir::func::CallOp callOp,
+                                    mlir::func::FuncOp callee) {
+                mlir::Block& calleeBlock = callee.front();
+                mlir::IRMapping mapping;
+                for (unsigned i = 0; i < calleeBlock.getNumArguments(); i++) {
+                    mapping.map(calleeBlock.getArgument(i), callOp.getOperand(i));
+                }
+
+                mlir::OpBuilder builder(callOp);
+                for (auto& op : calleeBlock) {
+                    if (auto retOp = mlir::dyn_cast<mlir::func::ReturnOp>(&op)) {
+                        for (unsigned i = 0; i < callOp.getNumResults(); i++) {
+                            callOp.getResult(i).replaceAllUsesWith(
+                                mapping.lookup(retOp.getOperand(i)));
+                        }
+                        continue;
+                    }
+                    builder.clone(op, mapping);
+                }
+                callOp.erase();
+            };
+
             bool changed = true;
             int pass_num = 0;
             while (changed) {
                 changed = false;
                 MPS_LOG_DEBUG("BuildExecutionPlan: inline pass iteration %d\n", pass_num++);
-                mlir::Block& block = entry_func_.front();
-                // NOLINTNEXTLINE(modernize-loop-convert) - iterator invalidated by erase+break
-                for (auto it = block.begin(), end = block.end(); it != end; ++it) {
-                    auto callOp = mlir::dyn_cast<mlir::func::CallOp>(&*it);
-                    if (!callOp)
-                        continue;
+
+                // Walk ALL operations in the function (including nested regions)
+                // to find func.call ops that need inlining.
+                mlir::func::CallOp foundCall = nullptr;
+                mlir::func::FuncOp foundCallee = nullptr;
+
+                entry_func_.walk([&](mlir::func::CallOp callOp) {
+                    if (foundCall) return;
                     MPS_LOG_DEBUG("BuildExecutionPlan: found call to %s\n",
                                   callOp.getCallee().str().c_str());
 
-                    auto callee = module_->lookupSymbol<mlir::func::FuncOp>(callOp.getCallee());
+                    auto callee = module_->lookupSymbol<mlir::func::FuncOp>(
+                        callOp.getCallee());
                     if (!callee || callee.empty())
-                        continue;
+                        return;
 
-                    // Inline callees that contain native ops or nested func.call
-                    // ops (which may transitively contain native ops). The outer
-                    // while(changed) loop ensures we keep inlining until all
-                    // transitive native ops are exposed in the entry block.
-                    bool should_inline = false;
-                    callee.walk([&](mlir::Operation* inner) {
-                        if (should_inline)
-                            return;
-                        std::string inner_name = inner->getName().getStringRef().str();
-                        const OpHandler* h = OpRegistry::Find(inner_name);
-                        if (h && h->is_native()) {
-                            should_inline = true;
-                        } else if (mlir::dyn_cast<mlir::func::CallOp>(inner)) {
-                            should_inline = true;
-                        } else if (auto ccOp = mlir::dyn_cast<mlir::stablehlo::CustomCallOp>(inner)) {
-                            const OpHandler* ccH =
-                                CustomCallRegistry::Find(ccOp.getCallTargetName().str());
-                            if (ccH && ccH->is_native()) {
-                                should_inline = true;
-                            }
-                        }
-                    });
-                    if (!should_inline)
-                        continue;
-
-                    // Clone the callee's body into the caller.
-                    mlir::Block& calleeBlock = callee.front();
-                    mlir::IRMapping mapping;
-                    for (unsigned i = 0; i < calleeBlock.getNumArguments(); i++) {
-                        mapping.map(calleeBlock.getArgument(i), callOp.getOperand(i));
+                    if (shouldInlineCallee(callee)) {
+                        foundCall = callOp;
+                        foundCallee = callee;
                     }
+                });
 
-                    mlir::OpBuilder builder(callOp);
-                    for (auto& op : calleeBlock) {
-                        if (auto retOp = mlir::dyn_cast<mlir::func::ReturnOp>(&op)) {
-                            // Wire callee return values to call results.
-                            for (unsigned i = 0; i < callOp.getNumResults(); i++) {
-                                callOp.getResult(i).replaceAllUsesWith(
-                                    mapping.lookup(retOp.getOperand(i)));
-                            }
-                            continue;
-                        }
-                        builder.clone(op, mapping);
-                    }
-                    callOp.erase();
+                if (foundCall) {
+                    inlineCallOp(foundCall, foundCallee);
                     changed = true;
-                    break;  // Restart – block iterators invalidated.
                 }
             }
         }

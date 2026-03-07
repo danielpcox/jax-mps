@@ -1,3 +1,4 @@
+import jax
 import numpy
 from jax import numpy as jnp
 from jax import random
@@ -412,4 +413,50 @@ def make_linalg_op_configs():
             lambda key: _random_posdef(key, 3),
             differentiable_argnums=(),
             name="eig_identity_check",
+        )
+
+        # --- expm (matrix exponential, uses solve inside control flow) ---
+
+        # expm of identity-like matrix
+        yield OperationTestConfig(
+            jax.scipy.linalg.expm,
+            numpy.eye(3, dtype=numpy.float32) * 0.1,
+            differentiable_argnums=(),
+            name="expm_identity_scaled",
+        )
+
+        # expm of random matrix
+        for n in [2, 3, 4]:
+            yield OperationTestConfig(
+                jax.scipy.linalg.expm,
+                lambda key, n=n: random.normal(key, (n, n)) * 0.1,
+                differentiable_argnums=(),
+                name=f"expm_{n}x{n}",
+            )
+
+        # --- solve and inv inside control flow ---
+
+        # solve inside cond (tests graph fallback for triangular_solve)
+        yield OperationTestConfig(
+            lambda A, b: jax.lax.cond(
+                True,
+                lambda: jnp.linalg.solve(A, b),
+                lambda: jnp.zeros_like(b),
+            ),
+            lambda key: _random_posdef(key, 3),
+            lambda key: random.normal(key, (3, 1)),
+            differentiable_argnums=(),
+            name="solve_in_cond",
+        )
+
+        # inv inside cond
+        yield OperationTestConfig(
+            lambda A: jax.lax.cond(
+                True,
+                lambda: jnp.linalg.inv(A),
+                lambda: jnp.zeros_like(A),
+            ),
+            lambda key: _random_posdef(key, 3),
+            differentiable_argnums=(),
+            name="inv_in_cond",
         )
