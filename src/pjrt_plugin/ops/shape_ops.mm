@@ -1305,13 +1305,38 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
             updates = [ctx.graph reshapeTensor:updates withShape:@[@1] name:nil];
 
         // MPS scatter requires updates rank to match operand rank. When updates has higher
-        // rank (e.g. 2D batch of indices into 2D embedding table), MPS cannot handle it.
+        // rank (e.g. batch of indices into embedding table: indices [B, S, 1] -> squeezed [B, S],
+        // updates [B, S, D] into operand [V, D]), flatten the batch dimensions so MPS can handle it.
         if (updates.shape.count > input.shape.count) {
-            return ProcessResult::Error(
-                "scatter: MPS does not support scatter where updates rank (" +
-                std::to_string(updates.shape.count) + ") > operand rank (" +
-                std::to_string(input.shape.count) +
-                "). This can occur with multi-dimensional indices into embeddings.");
+            // The extra dimensions in updates/indices are batch dims that need flattening.
+            // updates: [batch..., window_dims...] -> [flat_batch, window_dims...]
+            // indices: [batch...] -> [flat_batch]
+            NSUInteger numBatchDims = updates.shape.count - (input.shape.count - insertedWindowDims.size());
+            if (numBatchDims > 0 && squeezedIndices.shape.count == numBatchDims) {
+                // Flatten all batch dims into one
+                NSInteger flatBatch = 1;
+                for (NSUInteger i = 0; i < numBatchDims; i++) {
+                    flatBatch *= [squeezedIndices.shape[i] integerValue];
+                }
+
+                // Flatten indices: [B1, B2, ...] -> [flat]
+                squeezedIndices = [ctx.graph reshapeTensor:squeezedIndices
+                                                withShape:@[@(flatBatch)]
+                                                     name:nil];
+
+                // Flatten updates: [B1, B2, ..., D1, D2, ...] -> [flat, D1, D2, ...]
+                NSMutableArray<NSNumber*>* flatUpdatesShape = [NSMutableArray array];
+                [flatUpdatesShape addObject:@(flatBatch)];
+                for (NSUInteger i = numBatchDims; i < updates.shape.count; i++) {
+                    [flatUpdatesShape addObject:updates.shape[i]];
+                }
+                updates = [ctx.graph reshapeTensor:updates withShape:flatUpdatesShape name:nil];
+            } else {
+                return ProcessResult::Error(
+                    "scatter: cannot flatten batch dimensions - updates rank (" +
+                    std::to_string(updates.shape.count) + ") > operand rank (" +
+                    std::to_string(input.shape.count) + ").");
+            }
         }
 
         // Scalar index updates in StableHLO can drop the scattered axis from the update

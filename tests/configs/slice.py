@@ -330,6 +330,15 @@ def make_slice_op_configs():
                 differentiable_argnums=(0,),
                 name="vmap_embedding_grad",
             ),
+            # Direct embedding gradient: embed[tokens] with 2D token indices
+            # Exercises batched scatter-add where updates rank > operand rank
+            OperationTestConfig(
+                lambda w, idx: jnp.sum(w[idx] ** 2),
+                lambda key: random.normal(key, (50, 8)),
+                lambda key: random.randint(key, (4, 3), 0, 50),
+                differentiable_argnums=(0,),
+                name="embedding_grad_2d_indices",
+            ),
             # Batched embedding via double vmap
             OperationTestConfig(
                 lambda w, idx: jax.vmap(jax.vmap(lambda i: w[i]))(idx),
