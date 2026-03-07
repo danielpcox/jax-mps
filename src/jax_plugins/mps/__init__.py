@@ -164,6 +164,53 @@ def _register_lowering_rules():
                 results.append(op.results[2])
             return results
 
+        def _eig_mps_lowering(
+            ctx,
+            operand,
+            *,
+            compute_left_eigenvectors,
+            compute_right_eigenvectors,
+            implementation,
+        ):
+            """Lower eig to custom_call @mps_sgeev.
+
+            Returns complex eigenvalues and eigenvectors directly from
+            the native handler (no intermediate stablehlo.complex op needed).
+            """
+            import numpy as np
+            from jax._src.core import ShapedArray
+
+            operand_aval = ctx.avals_in[0]
+            n = operand_aval.shape[-1]
+            batch_dims = operand_aval.shape[:-2]
+
+            # Custom call returns: (w_complex, vl_complex, vr_complex, info)
+            w_aval = ShapedArray((*batch_dims, n), np.complex64)
+            vl_aval = ShapedArray((*batch_dims, n, n), np.complex64)
+            vr_aval = ShapedArray((*batch_dims, n, n), np.complex64)
+            info_aval = ShapedArray((), np.int32)
+
+            result_types = [
+                mlir.aval_to_ir_type(w_aval),
+                mlir.aval_to_ir_type(vl_aval),
+                mlir.aval_to_ir_type(vr_aval),
+                mlir.aval_to_ir_type(info_aval),
+            ]
+            config = f"{int(compute_left_eigenvectors)},{int(compute_right_eigenvectors)}"
+            op = mlir.custom_call(
+                "mps_sgeev",
+                result_types=result_types,
+                operands=[operand],
+                api_version=1,
+                backend_config=config,
+            )
+            results = [op.results[0]]  # eigenvalues (complex)
+            if compute_left_eigenvectors:
+                results.append(op.results[1])
+            if compute_right_eigenvectors:
+                results.append(op.results[2])
+            return results
+
         # Register under "mps" (backend platform name used during lowering lookup).
         # JAX's register_lowering validates against known_platforms() which includes
         # "METAL" from the PJRT plugin, but lowering dispatch uses the backend name
@@ -174,6 +221,9 @@ def _register_lowering_rules():
         )
         mps_lowerings[lax_linalg.svd_p] = mlir.LoweringRuleEntry(
             _svd_mps_lowering, True
+        )
+        mps_lowerings[lax_linalg.eig_p] = mlir.LoweringRuleEntry(
+            _eig_mps_lowering, True
         )
     except Exception:
         pass  # Don't fail initialization if lowering registration fails

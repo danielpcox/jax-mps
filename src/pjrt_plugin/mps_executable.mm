@@ -673,7 +673,10 @@ bool MpsExecutable::BuildExecutionPlan() {
                 for (mlir::Value operand : op->getOperands()) {
                     ns.input_slots.push_back(value_to_slot[operand.getAsOpaquePointer()]);
                 }
+                // Ensure all results have slots (even unused ones) to avoid
+                // default-constructing slot 0 in the map lookup.
                 for (unsigned i = 0; i < op->getNumResults(); i++) {
+                    getOrCreateSlot(op->getResult(i));
                     ns.output_slots.push_back(value_to_slot[op->getResult(i).getAsOpaquePointer()]);
                 }
 

@@ -886,4 +886,172 @@ static NativeResult NativeHandle_Sgesdd(id<MTLDevice> device, id<MTLCommandBuffe
 static bool _cc_reg_Sgesdd =
     CustomCallRegistry::Register("mps_sgesdd", OpHandler::Native(NativeHandle_Sgesdd));
 
+// ---------------------------------------------------------------------------
+// General eigendecomposition via Accelerate LAPACK (sgeev_)
+// ---------------------------------------------------------------------------
+// custom_call @"mps_sgeev": computes eigenvalues and optionally eigenvectors
+// of a general (non-symmetric) real matrix.
+// Input: tensor<...xNxNxf32> (square matrix)
+// Output 0: tensor<...xNxcomplex<f32>> (eigenvalues)
+// Output 1: tensor<...xNxNxcomplex<f32>> (left eigenvectors, may be unused)
+// Output 2: tensor<...xNxNxcomplex<f32>> (right eigenvectors, may be unused)
+// Output 3: tensor<i32> (info)
+
+static NativeResult NativeHandle_Sgeev(id<MTLDevice> device, id<MTLCommandBuffer> cmdBuf,
+                                        mlir::Operation* op,
+                                        const std::vector<id<MTLBuffer>>& inputs) {
+    if (inputs.empty())
+        return NativeResult::Error("Sgeev: missing input");
+
+    auto customCallOp = mlir::dyn_cast<mlir::stablehlo::CustomCallOp>(op);
+    if (!customCallOp || op->getNumResults() != 4)
+        return NativeResult::Error("Sgeev: expected CustomCallOp with 4 results");
+
+    auto inputType = mlir::cast<mlir::RankedTensorType>(op->getOperand(0).getType());
+    auto shape = inputType.getShape();
+    if (shape.size() < 2)
+        return NativeResult::Error("Sgeev: expected at least rank 2");
+    if (!inputType.getElementType().isF32())
+        return NativeResult::Error("Sgeev: only float32 supported");
+
+    int64_t n = shape[shape.size() - 1];
+    int64_t batchSize = 1;
+    for (size_t i = 0; i < shape.size() - 2; i++)
+        batchSize *= shape[i];
+
+    // Parse backend_config for compute_left, compute_right
+    // Format: "compute_left,compute_right" (0 or 1)
+    bool computeLeft = false;
+    bool computeRight = true;
+    auto configOpt = customCallOp.getBackendConfig();
+    if (configOpt.has_value()) {
+        if (auto strAttr = mlir::dyn_cast<mlir::StringAttr>(*configOpt)) {
+            auto config = strAttr.getValue().str();
+            if (config.size() >= 3) {
+                computeLeft = (config[0] == '1');
+                computeRight = (config[2] == '1');
+            }
+        }
+    }
+
+    // Complex eigenvalue buffer: N complex<float> = N*2 floats
+    size_t complexEigenvalSize = (size_t)(n * 2) * sizeof(float);
+    size_t totalComplexEigenvalSize = (size_t)batchSize * complexEigenvalSize;
+    // Complex eigenvector buffers: N*N complex<float> = N*N*2 floats
+    size_t complexMatrixSize = (size_t)(n * n * 2) * sizeof(float);
+    size_t totalComplexMatrixSize = (size_t)batchSize * complexMatrixSize;
+
+    id<MTLBuffer> outW = [device newBufferWithLength:totalComplexEigenvalSize
+                                             options:MTLResourceStorageModeShared];
+    id<MTLBuffer> outVl = [device newBufferWithLength:totalComplexMatrixSize
+                                              options:MTLResourceStorageModeShared];
+    id<MTLBuffer> outVr = [device newBufferWithLength:totalComplexMatrixSize
+                                              options:MTLResourceStorageModeShared];
+    id<MTLBuffer> outInfo = [device newBufferWithLength:sizeof(int32_t)
+                                               options:MTLResourceStorageModeShared];
+
+    int32_t globalInfo = 0;
+
+    for (int64_t b = 0; b < batchSize; b++) {
+        const float* inputMatrix = (const float*)inputs[0].contents + b * n * n;
+
+        // Temporary real/imag eigenvalue arrays for LAPACK
+        std::vector<float> wr(n), wi(n);
+
+        // Transpose to column-major for LAPACK
+        std::vector<float> a(n * n);
+        for (int64_t i = 0; i < n; i++)
+            for (int64_t j = 0; j < n; j++)
+                a[j * n + i] = inputMatrix[i * n + j];
+
+        char jobvl = computeLeft ? 'V' : 'N';
+        char jobvr = computeRight ? 'V' : 'N';
+        __CLPK_integer ln = (__CLPK_integer)n;
+        __CLPK_integer lda = (__CLPK_integer)n;
+        __CLPK_integer ldvl = (__CLPK_integer)n;
+        __CLPK_integer ldvr = (__CLPK_integer)n;
+        __CLPK_integer info = 0;
+        __CLPK_integer lwork = -1;
+
+        // LAPACK sgeev returns real eigenvectors in a packed format
+        std::vector<float> vl_real(computeLeft ? n * n : 1);
+        std::vector<float> vr_real(computeRight ? n * n : 1);
+
+        // Query workspace
+        float work_query;
+        sgeev_(&jobvl, &jobvr, &ln, a.data(), &lda, wr.data(), wi.data(),
+               vl_real.data(), &ldvl, vr_real.data(), &ldvr,
+               &work_query, &lwork, &info);
+        lwork = (__CLPK_integer)work_query;
+        std::vector<float> work(lwork);
+
+        // Compute eigendecomposition
+        sgeev_(&jobvl, &jobvr, &ln, a.data(), &lda, wr.data(), wi.data(),
+               vl_real.data(), &ldvl, vr_real.data(), &ldvr,
+               work.data(), &lwork, &info);
+
+        if (info != 0) {
+            globalInfo = (int32_t)info;
+        }
+
+        // Pack eigenvalues as complex: [re0, im0, re1, im1, ...]
+        float* wOut = (float*)outW.contents + b * n * 2;
+        for (int64_t j = 0; j < n; j++) {
+            wOut[j * 2] = wr[j];
+            wOut[j * 2 + 1] = wi[j];
+        }
+
+        // Convert LAPACK's packed real eigenvector format to complex.
+        // sgeev_ stores eigenvectors of complex conjugate pairs in adjacent columns:
+        //   - If eigenvalue j is real: column j is the real eigenvector
+        //   - If eigenvalues j, j+1 are complex conjugates (wr[j]+i*wi[j], wr[j]-i*wi[j]):
+        //     column j = real part, column j+1 = imaginary part
+        //     eigenvector j = col_j + i*col_{j+1}
+        //     eigenvector j+1 = col_j - i*col_{j+1}
+        auto unpackEigenvectors = [&](const std::vector<float>& v_real, float* outComplex) {
+            int64_t j = 0;
+            while (j < n) {
+                if (wi[j] == 0.0f) {
+                    // Real eigenvalue: eigenvector is real
+                    for (int64_t i = 0; i < n; i++) {
+                        // Output is row-major complex: [i*n+j] = {real, imag}
+                        // LAPACK column-major: v_real[j*n + i]
+                        outComplex[(i * n + j) * 2] = v_real[j * n + i];
+                        outComplex[(i * n + j) * 2 + 1] = 0.0f;
+                    }
+                    j++;
+                } else {
+                    // Complex conjugate pair: j and j+1
+                    for (int64_t i = 0; i < n; i++) {
+                        float re = v_real[j * n + i];       // column j
+                        float im = v_real[(j + 1) * n + i]; // column j+1
+                        // Eigenvector j: re + i*im
+                        outComplex[(i * n + j) * 2] = re;
+                        outComplex[(i * n + j) * 2 + 1] = im;
+                        // Eigenvector j+1: re - i*im
+                        outComplex[(i * n + (j + 1)) * 2] = re;
+                        outComplex[(i * n + (j + 1)) * 2 + 1] = -im;
+                    }
+                    j += 2;
+                }
+            }
+        };
+
+        if (computeLeft) {
+            float* vlOut = (float*)outVl.contents + b * n * n * 2;
+            unpackEigenvectors(vl_real, vlOut);
+        }
+        if (computeRight) {
+            float* vrOut = (float*)outVr.contents + b * n * n * 2;
+            unpackEigenvectors(vr_real, vrOut);
+        }
+    }
+
+    *(int32_t*)outInfo.contents = globalInfo;
+    return NativeResult::Buffers({outW, outVl, outVr, outInfo});
+}
+
+static bool _cc_reg_Sgeev =
+    CustomCallRegistry::Register("mps_sgeev", OpHandler::Native(NativeHandle_Sgeev));
+
 }  // namespace jax_mps
