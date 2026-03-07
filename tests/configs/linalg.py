@@ -623,6 +623,29 @@ def make_linalg_op_configs():
             name="eig_identity_check",
         )
 
+        # Complex eig (general non-symmetric complex matrices)
+        for n in [2, 3, 4]:
+            yield OperationTestConfig(
+                lambda x: jnp.sort(jnp.abs(jnp.linalg.eig(x)[0])),
+                lambda key, n=n: (
+                    random.normal(key, (n, n))
+                    + 1j * random.normal(random.split(key)[0], (n, n))
+                ),
+                differentiable_argnums=(),
+                name=f"eig_values_complex_{n}x{n}",
+            )
+
+        # Batched complex eig
+        yield OperationTestConfig(
+            lambda x: jnp.sort(jnp.abs(jnp.linalg.eig(x)[0]), axis=-1),
+            lambda key: (
+                random.normal(key, (2, 3, 3))
+                + 1j * random.normal(random.split(key)[0], (2, 3, 3))
+            ),
+            differentiable_argnums=(),
+            name="eig_values_complex_batched",
+        )
+
         # --- expm (matrix exponential, uses solve inside control flow) ---
 
         # expm of identity-like matrix

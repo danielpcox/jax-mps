@@ -1171,8 +1171,9 @@ static NativeResult NativeHandle_Sgeev(id<MTLDevice> device, id<MTLCommandBuffer
     auto shape = inputType.getShape();
     if (shape.size() < 2)
         return NativeResult::Error("Sgeev: expected at least rank 2");
-    if (!inputType.getElementType().isF32())
-        return NativeResult::Error("Sgeev: only float32 supported");
+    bool isComplex = mlir::isa<mlir::ComplexType>(inputType.getElementType());
+    if (!inputType.getElementType().isF32() && !isComplex)
+        return NativeResult::Error("Sgeev: only float32 and complex64 supported");
 
     int64_t n = shape[shape.size() - 1];
     int64_t batchSize = 1;
@@ -1213,17 +1214,6 @@ static NativeResult NativeHandle_Sgeev(id<MTLDevice> device, id<MTLCommandBuffer
     int32_t globalInfo = 0;
 
     for (int64_t b = 0; b < batchSize; b++) {
-        const float* inputMatrix = (const float*)inputs[0].contents + b * n * n;
-
-        // Temporary real/imag eigenvalue arrays for LAPACK
-        std::vector<float> wr(n), wi(n);
-
-        // Transpose to column-major for LAPACK
-        std::vector<float> a(n * n);
-        for (int64_t i = 0; i < n; i++)
-            for (int64_t j = 0; j < n; j++)
-                a[j * n + i] = inputMatrix[i * n + j];
-
         char jobvl = computeLeft ? 'V' : 'N';
         char jobvr = computeRight ? 'V' : 'N';
         __CLPK_integer ln = (__CLPK_integer)n;
@@ -1233,77 +1223,136 @@ static NativeResult NativeHandle_Sgeev(id<MTLDevice> device, id<MTLCommandBuffer
         __CLPK_integer info = 0;
         __CLPK_integer lwork = -1;
 
-        // LAPACK sgeev returns real eigenvectors in a packed format
-        std::vector<float> vl_real(computeLeft ? n * n : 1);
-        std::vector<float> vr_real(computeRight ? n * n : 1);
+        if (isComplex) {
+            const float* inputRaw = (const float*)inputs[0].contents + b * n * n * 2;
 
-        // Query workspace
-        float work_query;
-        sgeev_(&jobvl, &jobvr, &ln, a.data(), &lda, wr.data(), wi.data(),
-               vl_real.data(), &ldvl, vr_real.data(), &ldvr,
-               &work_query, &lwork, &info);
-        lwork = (__CLPK_integer)work_query;
-        std::vector<float> work(lwork);
-
-        // Compute eigendecomposition
-        sgeev_(&jobvl, &jobvr, &ln, a.data(), &lda, wr.data(), wi.data(),
-               vl_real.data(), &ldvl, vr_real.data(), &ldvr,
-               work.data(), &lwork, &info);
-
-        if (info != 0) {
-            globalInfo = (int32_t)info;
-        }
-
-        // Pack eigenvalues as complex: [re0, im0, re1, im1, ...]
-        float* wOut = (float*)outW.contents + b * n * 2;
-        for (int64_t j = 0; j < n; j++) {
-            wOut[j * 2] = wr[j];
-            wOut[j * 2 + 1] = wi[j];
-        }
-
-        // Convert LAPACK's packed real eigenvector format to complex.
-        // sgeev_ stores eigenvectors of complex conjugate pairs in adjacent columns:
-        //   - If eigenvalue j is real: column j is the real eigenvector
-        //   - If eigenvalues j, j+1 are complex conjugates (wr[j]+i*wi[j], wr[j]-i*wi[j]):
-        //     column j = real part, column j+1 = imaginary part
-        //     eigenvector j = col_j + i*col_{j+1}
-        //     eigenvector j+1 = col_j - i*col_{j+1}
-        auto unpackEigenvectors = [&](const std::vector<float>& v_real, float* outComplex) {
-            int64_t j = 0;
-            while (j < n) {
-                if (wi[j] == 0.0f) {
-                    // Real eigenvalue: eigenvector is real
-                    for (int64_t i = 0; i < n; i++) {
-                        // Output is row-major complex: [i*n+j] = {real, imag}
-                        // LAPACK column-major: v_real[j*n + i]
-                        outComplex[(i * n + j) * 2] = v_real[j * n + i];
-                        outComplex[(i * n + j) * 2 + 1] = 0.0f;
-                    }
-                    j++;
-                } else {
-                    // Complex conjugate pair: j and j+1
-                    for (int64_t i = 0; i < n; i++) {
-                        float re = v_real[j * n + i];       // column j
-                        float im = v_real[(j + 1) * n + i]; // column j+1
-                        // Eigenvector j: re + i*im
-                        outComplex[(i * n + j) * 2] = re;
-                        outComplex[(i * n + j) * 2 + 1] = im;
-                        // Eigenvector j+1: re - i*im
-                        outComplex[(i * n + (j + 1)) * 2] = re;
-                        outComplex[(i * n + (j + 1)) * 2 + 1] = -im;
-                    }
-                    j += 2;
+            // Transpose to column-major (complex elements = 2 floats each)
+            std::vector<float> aCm(n * n * 2);
+            for (int64_t i = 0; i < n; i++)
+                for (int64_t j = 0; j < n; j++) {
+                    aCm[(j * n + i) * 2] = inputRaw[(i * n + j) * 2];
+                    aCm[(j * n + i) * 2 + 1] = inputRaw[(i * n + j) * 2 + 1];
                 }
-            }
-        };
 
-        if (computeLeft) {
-            float* vlOut = (float*)outVl.contents + b * n * n * 2;
-            unpackEigenvectors(vl_real, vlOut);
-        }
-        if (computeRight) {
-            float* vrOut = (float*)outVr.contents + b * n * n * 2;
-            unpackEigenvectors(vr_real, vrOut);
+            // cgeev_ outputs complex eigenvalues directly
+            std::vector<__CLPK_complex> w(n);
+            std::vector<__CLPK_complex> vl(computeLeft ? n * n : 1);
+            std::vector<__CLPK_complex> vr(computeRight ? n * n : 1);
+            std::vector<float> rwork(2 * n);
+
+            // Query workspace
+            __CLPK_complex work_query;
+            cgeev_(&jobvl, &jobvr, &ln, (__CLPK_complex*)aCm.data(), &lda,
+                   w.data(), vl.data(), &ldvl, vr.data(), &ldvr,
+                   &work_query, &lwork, rwork.data(), &info);
+            lwork = (__CLPK_integer)work_query.r;
+            std::vector<__CLPK_complex> work(lwork);
+
+            // Compute
+            cgeev_(&jobvl, &jobvr, &ln, (__CLPK_complex*)aCm.data(), &lda,
+                   w.data(), vl.data(), &ldvl, vr.data(), &ldvr,
+                   work.data(), &lwork, rwork.data(), &info);
+
+            if (info != 0) {
+                globalInfo = (int32_t)info;
+            }
+
+            // Copy eigenvalues (already complex)
+            float* wOut = (float*)outW.contents + b * n * 2;
+            for (int64_t j = 0; j < n; j++) {
+                wOut[j * 2] = w[j].r;
+                wOut[j * 2 + 1] = w[j].i;
+            }
+
+            // Transpose eigenvectors from column-major to row-major
+            if (computeLeft) {
+                float* vlOut = (float*)outVl.contents + b * n * n * 2;
+                for (int64_t i = 0; i < n; i++)
+                    for (int64_t j = 0; j < n; j++) {
+                        vlOut[(i * n + j) * 2] = vl[j * n + i].r;
+                        vlOut[(i * n + j) * 2 + 1] = vl[j * n + i].i;
+                    }
+            }
+            if (computeRight) {
+                float* vrOut = (float*)outVr.contents + b * n * n * 2;
+                for (int64_t i = 0; i < n; i++)
+                    for (int64_t j = 0; j < n; j++) {
+                        vrOut[(i * n + j) * 2] = vr[j * n + i].r;
+                        vrOut[(i * n + j) * 2 + 1] = vr[j * n + i].i;
+                    }
+            }
+        } else {
+            const float* inputMatrix = (const float*)inputs[0].contents + b * n * n;
+
+            // Temporary real/imag eigenvalue arrays for LAPACK
+            std::vector<float> wr(n), wi(n);
+
+            // Transpose to column-major for LAPACK
+            std::vector<float> a(n * n);
+            for (int64_t i = 0; i < n; i++)
+                for (int64_t j = 0; j < n; j++)
+                    a[j * n + i] = inputMatrix[i * n + j];
+
+            // LAPACK sgeev returns real eigenvectors in a packed format
+            std::vector<float> vl_real(computeLeft ? n * n : 1);
+            std::vector<float> vr_real(computeRight ? n * n : 1);
+
+            // Query workspace
+            float work_query;
+            sgeev_(&jobvl, &jobvr, &ln, a.data(), &lda, wr.data(), wi.data(),
+                   vl_real.data(), &ldvl, vr_real.data(), &ldvr,
+                   &work_query, &lwork, &info);
+            lwork = (__CLPK_integer)work_query;
+            std::vector<float> work(lwork);
+
+            // Compute eigendecomposition
+            sgeev_(&jobvl, &jobvr, &ln, a.data(), &lda, wr.data(), wi.data(),
+                   vl_real.data(), &ldvl, vr_real.data(), &ldvr,
+                   work.data(), &lwork, &info);
+
+            if (info != 0) {
+                globalInfo = (int32_t)info;
+            }
+
+            // Pack eigenvalues as complex: [re0, im0, re1, im1, ...]
+            float* wOut = (float*)outW.contents + b * n * 2;
+            for (int64_t j = 0; j < n; j++) {
+                wOut[j * 2] = wr[j];
+                wOut[j * 2 + 1] = wi[j];
+            }
+
+            // Convert LAPACK's packed real eigenvector format to complex.
+            auto unpackEigenvectors = [&](const std::vector<float>& v_real, float* outComplex) {
+                int64_t j = 0;
+                while (j < n) {
+                    if (wi[j] == 0.0f) {
+                        for (int64_t i = 0; i < n; i++) {
+                            outComplex[(i * n + j) * 2] = v_real[j * n + i];
+                            outComplex[(i * n + j) * 2 + 1] = 0.0f;
+                        }
+                        j++;
+                    } else {
+                        for (int64_t i = 0; i < n; i++) {
+                            float re = v_real[j * n + i];
+                            float im = v_real[(j + 1) * n + i];
+                            outComplex[(i * n + j) * 2] = re;
+                            outComplex[(i * n + j) * 2 + 1] = im;
+                            outComplex[(i * n + (j + 1)) * 2] = re;
+                            outComplex[(i * n + (j + 1)) * 2 + 1] = -im;
+                        }
+                        j += 2;
+                    }
+                }
+            };
+
+            if (computeLeft) {
+                float* vlOut = (float*)outVl.contents + b * n * n * 2;
+                unpackEigenvectors(vl_real, vlOut);
+            }
+            if (computeRight) {
+                float* vrOut = (float*)outVr.contents + b * n * n * 2;
+                unpackEigenvectors(vr_real, vrOut);
+            }
         }
     }
 
