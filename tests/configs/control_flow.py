@@ -1,3 +1,4 @@
+import jax
 import numpy
 from jax import lax, random
 from jax import numpy as jnp
@@ -404,5 +405,28 @@ def make_control_flow_op_configs():
                 lambda x: lax.associative_scan(lax.mul, x),
                 lambda key: random.uniform(key, (5,), minval=0.5, maxval=1.5),
                 name="associative_scan_mul",
+            ),
+            # ==================== jax.checkpoint (remat) ====================
+            # Gradient through checkpointed function uses optimization_barrier
+            OperationTestConfig(
+                lambda x: jax.grad(
+                    lambda y: jnp.sum(jax.checkpoint(lambda z: jnp.sin(z) * z)(y))
+                )(x),
+                lambda key: random.normal(key, (4,)),
+                differentiable_argnums=(),
+                name="checkpoint_grad",
+            ),
+            # Multi-layer checkpoint (stacked blocks)
+            OperationTestConfig(
+                lambda x: jax.grad(
+                    lambda y: jnp.sum(
+                        jax.checkpoint(lambda z: jnp.tanh(z @ jnp.ones((4, 4))))(
+                            jax.checkpoint(lambda z: jnp.sin(z))(y)
+                        )
+                    )
+                )(x),
+                lambda key: random.normal(key, (3, 4)),
+                differentiable_argnums=(),
+                name="checkpoint_stacked",
             ),
         ]

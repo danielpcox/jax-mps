@@ -300,10 +300,27 @@ static ProcessResult HandleIfOp(HandlerContext& ctx) {
     return ProcessResult{};
 }
 
+// optimization_barrier: identity op that prevents compiler reordering.
+// Each output i is just input i passed through unchanged.
+static ProcessResult HandleOptimizationBarrier(HandlerContext& ctx) {
+    for (unsigned i = 0; i < ctx.op->getNumOperands(); i++) {
+        MPSGraphTensor* input = GetTensor(ctx.values, ctx.op->getOperand(i));
+        if (!input) {
+            return ProcessResult::Error("optimization_barrier: missing input " +
+                                        std::to_string(i));
+        }
+        // Pass through via identity to maintain graph connectivity
+        MPSGraphTensor* output = [ctx.graph identityWithTensor:input name:nil];
+        ctx.values[ctx.op->getResult(i).getAsOpaquePointer()] = output;
+    }
+    return ProcessResult{};
+}
+
 // Register control flow ops as regular GRAPH ops
 REGISTER_MPS_OP("stablehlo.while", HandleWhileOp);
 REGISTER_MPS_OP("stablehlo.case", HandleCaseOp);
 REGISTER_MPS_OP("stablehlo.if", HandleIfOp);
+REGISTER_MPS_OP("stablehlo.optimization_barrier", HandleOptimizationBarrier);
 
 // Register custom_call as a regular GRAPH op - it dispatches to CustomCallRegistry internally
 REGISTER_MPS_OP("stablehlo.custom_call", HandleCustomCall);
