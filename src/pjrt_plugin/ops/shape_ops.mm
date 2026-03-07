@@ -670,11 +670,186 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
         return Result(ctx, gathered, "gather");
     }
 
-    // Handle multi-index point gather pattern:
+    // Handle single-index slice pattern (e.g., x[:, :-1, None] or x[start:]):
+    // Pattern: a single index into one dimension, all other dims pass through as offset.
+    // Example: operand [4,16], indices [1] (scalar 0), start_index_map=[1], slice_sizes=[4,15]
+    //   offset_dims=[0,1], collapsed=[], index_vector_dim=0
+    // This is essentially a dynamic_slice operation.
+    if (operandBatchingDims.empty() && startIndicesBatchingDims.empty() &&
+        startIndexMap.size() == 1 && collapsedSliceDims.empty() && indexVectorDim == 0 &&
+        indicesRank == 1 && [indicesShape[0] integerValue] == 1) {
+        int64_t sliceAxis = startIndexMap[0];
+        auto sliceSizes = gatherOp.getSliceSizes();
+
+        // Build start indices for dynamic_slice: zeros except for the slice axis
+        NSMutableArray<NSNumber*>* startOffsets = [NSMutableArray array];
+        auto operandType = mlir::cast<mlir::RankedTensorType>(ctx.op->getOperand(0).getType());
+        NSUInteger operandRank = (NSUInteger)operandType.getShape().size();
+        for (NSUInteger d = 0; d < operandRank; ++d) {
+            [startOffsets addObject:@0];
+        }
+
+        // The start index is the scalar in the indices tensor
+        MPSGraphTensor* startIdx = EnsureInt32(ctx.graph, startIndices);
+        // Reshape from [1] to scalar
+        startIdx = [ctx.graph reshapeTensor:startIdx withShape:@[] name:nil];
+
+        // Compute slice: use sliceTensor with starts/ends/strides
+        NSMutableArray<NSNumber*>* starts = [NSMutableArray array];
+        NSMutableArray<NSNumber*>* ends = [NSMutableArray array];
+        NSMutableArray<NSNumber*>* strides_arr = [NSMutableArray array];
+        bool allStatic = true;
+
+        for (NSUInteger d = 0; d < operandRank; ++d) {
+            if ((int64_t)d == sliceAxis) {
+                // For the slice axis, check if we can determine the start statically
+                // The index tensor is a constant (e.g., 0)
+                // For now, handle the common case where index is constant 0
+                allStatic = false;  // dynamic start
+            }
+            [starts addObject:@0];
+            [ends addObject:@(sliceSizes[d])];
+            [strides_arr addObject:@1];
+        }
+
+        // Since the index might be dynamic, use stablehlo.dynamic_slice semantics:
+        // For the common case where the index is compile-time 0, just use static slice
+        // Check if indices is a constant
+        bool indexIsZero = false;
+        if (auto constOp = startIndices.operation) {
+            // MPS graph tensors from constants - check via shape
+            // Actually, we can just use the slice API since MPS graph handles it
+        }
+
+        // Use gatherAlongAxis for dynamic indexing
+        // Create indices for iota range: [0, 1, 2, ..., sliceSizes[sliceAxis]-1]
+        // Then add the start index offset
+        int64_t sliceLen = sliceSizes[sliceAxis];
+        NSMutableArray<NSNumber*>* iotaShape = [NSMutableArray array];
+        [iotaShape addObject:@(sliceLen)];
+        MPSGraphTensor* iota = [ctx.graph coordinateAlongAxis:0
+                                              withShape:iotaShape
+                                                   name:nil];
+        iota = [ctx.graph castTensor:iota toType:MPSDataTypeInt32 name:@"iota_i32"];
+
+        // Add start offset
+        MPSGraphTensor* offsetIota = [ctx.graph additionWithPrimaryTensor:iota
+                                                          secondaryTensor:startIdx
+                                                                     name:nil];
+
+        // gatherAlongAxis requires indices rank == operand rank.
+        // Build indices shape: operand shape but with sliceLen on the slice axis.
+        NSMutableArray<NSNumber*>* gatherShape = [NSMutableArray array];
+        for (NSUInteger d = 0; d < operandRank; ++d) {
+            if ((int64_t)d == sliceAxis) {
+                [gatherShape addObject:@(sliceLen)];
+            } else {
+                [gatherShape addObject:operand.shape[d]];
+            }
+        }
+        // Reshape iota to have size-1 dims for non-slice axes, then broadcast
+        NSMutableArray<NSNumber*>* iotaBroadcastShape = [NSMutableArray array];
+        for (NSUInteger d = 0; d < operandRank; ++d) {
+            if ((int64_t)d == sliceAxis) {
+                [iotaBroadcastShape addObject:@(sliceLen)];
+            } else {
+                [iotaBroadcastShape addObject:@1];
+            }
+        }
+        offsetIota = [ctx.graph reshapeTensor:offsetIota withShape:iotaBroadcastShape name:nil];
+        offsetIota = [ctx.graph broadcastTensor:offsetIota toShape:gatherShape name:nil];
+
+        // Gather along the slice axis
+        MPSGraphTensor* gathered = SafeGatherAlongAxis(
+            ctx.graph, (NSInteger)sliceAxis, operand, offsetIota);
+
+        // Reshape to expected output
+        NSArray<NSNumber*>* outputShape = GetOutputShape(ctx.op);
+        gathered = [ctx.graph reshapeTensor:gathered withShape:outputShape name:nil];
+
+        return Result(ctx, gathered, "gather");
+    }
+
+    // Handle slice-gather pattern (e.g., embedding lookup via vmap):
+    // Like multi-index gather but some mapped dims have full-size slices (not collapsed).
+    // Pattern: operand [10,4], indices [N,2], start_index_map=[0,1], slice_sizes=[1,4]
+    //   collapsed=[], offset_dims=[1,2]. The second index is always 0 (full dim slice).
+    // Strategy: identify the single "real" gather dim (slice_size=1), use simple gather.
+    if (operandBatchingDims.empty() && startIndicesBatchingDims.empty() &&
+        indexVectorDim == (int64_t)indicesRank - 1 && startIndexMap.size() > 1) {
+        auto sliceSizes = gatherOp.getSliceSizes();
+        auto operandType = mlir::cast<mlir::RankedTensorType>(ctx.op->getOperand(0).getType());
+        auto operandShape = operandType.getShape();
+
+        // Find dims where slice_size = 1 (real point-indexed dims)
+        // and dims where slice_size = full operand dim (passthrough dims)
+        llvm::SmallVector<int64_t> realIndexDims;
+        llvm::SmallVector<size_t> realIndexColumns;  // column index in startIndexMap
+        bool allPassthroughsAreFull = true;
+        for (size_t i = 0; i < startIndexMap.size(); ++i) {
+            int64_t dim = startIndexMap[i];
+            if (sliceSizes[dim] == 1) {
+                realIndexDims.push_back(dim);
+                realIndexColumns.push_back(i);
+            } else if (sliceSizes[dim] == operandShape[dim]) {
+                // Full-size slice — passthrough, index must be 0
+            } else {
+                allPassthroughsAreFull = false;
+            }
+        }
+
+        // This handler applies when: exactly 1 real index dim, rest are full passthrough
+        if (allPassthroughsAreFull && realIndexDims.size() == 1 && realIndexColumns.size() == 1) {
+            int64_t gatherAxis = realIndexDims[0];
+            size_t indexCol = realIndexColumns[0];
+
+            // Extract the relevant index column: indices[..., indexCol]
+            NSMutableArray<NSNumber*>* starts = [NSMutableArray array];
+            NSMutableArray<NSNumber*>* ends = [NSMutableArray array];
+            NSMutableArray<NSNumber*>* strides_arr = [NSMutableArray array];
+            for (NSUInteger d = 0; d < indicesRank; ++d) {
+                if (d == (NSUInteger)indexVectorDim) {
+                    [starts addObject:@(indexCol)];
+                    [ends addObject:@(indexCol + 1)];
+                } else {
+                    [starts addObject:@0];
+                    [ends addObject:indicesShape[d]];
+                }
+                [strides_arr addObject:@1];
+            }
+            MPSGraphTensor* indexCol_t = [ctx.graph sliceTensor:startIndices
+                                                         starts:starts
+                                                           ends:ends
+                                                        strides:strides_arr
+                                                           name:nil];
+
+            // Squeeze the index vector dim: [N,1] -> [N]
+            NSMutableArray<NSNumber*>* squeezedShape = [NSMutableArray array];
+            for (NSUInteger d = 0; d < indicesRank; ++d) {
+                if (d != (NSUInteger)indexVectorDim) {
+                    [squeezedShape addObject:indexCol_t.shape[d]];
+                }
+            }
+            indexCol_t = [ctx.graph reshapeTensor:indexCol_t withShape:squeezedShape name:nil];
+            indexCol_t = EnsureInt32(ctx.graph, indexCol_t);
+
+            // Gather along the real index axis
+            MPSGraphTensor* gathered =
+                SafeGather(ctx.graph, operand, indexCol_t, (NSUInteger)gatherAxis, 0);
+
+            // Reshape to expected output shape (handles the offset dims)
+            NSArray<NSNumber*>* outputShape = GetOutputShape(ctx.op);
+            gathered = [ctx.graph reshapeTensor:gathered withShape:outputShape name:nil];
+
+            return Result(ctx, gathered, "gather");
+        }
+    }
+
+    // Handle multi-index gather pattern:
     // - indices: [N, k] where each row is a k-dimensional coordinate
     // - index_vector_dim is the last dimension
-    // - collapsed_slice_dims matches start_index_map (same set of dims)
-    // - all mapped slice_sizes are 1
+    // - collapsed_slice_dims ⊆ start_index_map (same set or subset)
+    // - all mapped slice_sizes are 1 (for collapsed dims) or pass through (for non-collapsed)
     // - offset_dims may be empty (pure point gather) or non-empty (with offset/batch dims)
     // - no batching dimensions
     //
@@ -683,9 +858,11 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
     //     offset_dims=[], collapsed=[0,1], start_index_map=[0,1], slice_sizes=[1,1]
     //   Gather with offset: jnp.diagonal(a, axis1=-1, axis2=-2) on [3,2,2] tensor
     //     offset_dims=[0], collapsed=[1,2], start_index_map=[1,2], slice_sizes=[3,1,1]
+    //   Embedding via vmap (slice gather): operand [10,4], indices [3,2]
+    //     offset_dims=[1,2], collapsed=[], start_index_map=[0,1], slice_sizes=[1,4]
     if (operandBatchingDims.empty() && startIndicesBatchingDims.empty() &&
         indexVectorDim == (int64_t)indicesRank - 1 &&
-        collapsedSliceDims.size() == startIndexMap.size() && startIndexMap.size() > 1) {
+        collapsedSliceDims.size() <= startIndexMap.size() && startIndexMap.size() > 1) {
         // Verify collapsed_slice_dims and start_index_map contain the same dims
         llvm::SmallVector<int64_t> sortedCollapsed(collapsedSliceDims.begin(),
                                                    collapsedSliceDims.end());
@@ -1170,6 +1347,182 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
         // Use SafeScatterND to handle integer precision issues
         MPSGraphTensor* result = SafeScatterND(ctx.graph, input, updates, ndIndices, 0, mode);
         return Result(ctx, result, "scatter");
+    }
+
+    // Handle slice-scatter pattern (reverse of slice-gather, e.g., embedding grad via vmap):
+    // Pattern: multi-index scatter where some mapped dims are full passthrough.
+    // Example: input [10,4], indices [3,2], updates [3,1,4]
+    //   scatter_dims_to_operand_dims=[0,1], inserted_window_dims=[], update_window_dims=[1,2]
+    //   The second index column is always 0 (full dim passthrough).
+    // Strategy: identify the single "real" scatter dim, reduce to simple scatter.
+    if (inputBatchingDims.empty() && insertedWindowDims.empty() &&
+        indexVectorDim == (int64_t)indicesRank - 1 && scatterDimsToOperandDims.size() > 1) {
+        auto updateWindowDimsSlice = dimNumbers.getUpdateWindowDims();
+        auto inputType = mlir::cast<mlir::RankedTensorType>(ctx.op->getOperand(0).getType());
+        auto inputShape = inputType.getShape();
+
+        // Find dims where the update window covers the full operand dim (passthrough)
+        // vs dims where the update window is size 1 (real scatter point)
+        // update_window_dims tells us which update dims are window dims.
+        // The window shape comes from the update's window dims.
+        llvm::SmallVector<int64_t> realScatterDims;  // operand dims with point scatter
+        llvm::SmallVector<size_t> realIndexColumns;   // index columns for real dims
+        bool allPassthroughsAreFull = true;
+
+        for (size_t i = 0; i < scatterDimsToOperandDims.size(); ++i) {
+            int64_t operandDim = scatterDimsToOperandDims[i];
+            // Find the corresponding window dim size from the update shape
+            // The update shape is [scatter_dims..., window_dims...]
+            // window_dims are listed in updateWindowDimsSlice
+            // The window shape for this operand dim: find the window dim index
+            // that corresponds to this operand dim
+            int64_t windowSize = -1;
+            // operandDim maps to a window dim: it's the position of operandDim
+            // among all operand dims that appear in update_window_dims
+            // Since inserted_window_dims is empty, all operand dims appear as window dims
+            // in the same order. So the window size for operandDim is the update size
+            // at the corresponding window dim position.
+            if ((size_t)operandDim < updateWindowDimsSlice.size() + scatterDimsToOperandDims.size()) {
+                // Find which window dim corresponds to this operand dim
+                for (size_t w = 0; w < updateWindowDimsSlice.size(); ++w) {
+                    // The w-th window dim corresponds to the w-th operand dim
+                    // (since no dims are inserted/collapsed)
+                    if ((int64_t)w == operandDim) {
+                        int64_t updateDim = updateWindowDimsSlice[w];
+                        auto updatesType = mlir::cast<mlir::RankedTensorType>(
+                            ctx.op->getOperand(2).getType());
+                        windowSize = updatesType.getShape()[updateDim];
+                        break;
+                    }
+                }
+            }
+
+            if (windowSize == 1) {
+                realScatterDims.push_back(operandDim);
+                realIndexColumns.push_back(i);
+            } else if (windowSize == inputShape[operandDim]) {
+                // Full passthrough - index is always 0
+            } else {
+                allPassthroughsAreFull = false;
+            }
+        }
+
+        if (allPassthroughsAreFull && realScatterDims.size() == 1) {
+            int64_t scatterAxis = realScatterDims[0];
+            size_t indexCol = realIndexColumns[0];
+
+            // Extract the relevant index column
+            NSMutableArray<NSNumber*>* starts = [NSMutableArray array];
+            NSMutableArray<NSNumber*>* ends = [NSMutableArray array];
+            NSMutableArray<NSNumber*>* strides_arr = [NSMutableArray array];
+            for (NSUInteger d = 0; d < indicesRank; ++d) {
+                if (d == (NSUInteger)indexVectorDim) {
+                    [starts addObject:@(indexCol)];
+                    [ends addObject:@(indexCol + 1)];
+                } else {
+                    [starts addObject:@0];
+                    [ends addObject:indicesShape[d]];
+                }
+                [strides_arr addObject:@1];
+            }
+            MPSGraphTensor* indexCol_t = [ctx.graph sliceTensor:scatterIndices
+                                                         starts:starts
+                                                           ends:ends
+                                                        strides:strides_arr
+                                                           name:nil];
+
+            // Squeeze the index vector dim
+            NSMutableArray<NSNumber*>* squeezedShape = [NSMutableArray array];
+            for (NSUInteger d = 0; d < indicesRank; ++d) {
+                if (d != (NSUInteger)indexVectorDim) {
+                    [squeezedShape addObject:indexCol_t.shape[d]];
+                }
+            }
+            if (squeezedShape.count == 0) [squeezedShape addObject:@1];
+            indexCol_t = [ctx.graph reshapeTensor:indexCol_t withShape:squeezedShape name:nil];
+            indexCol_t = EnsureInt32(ctx.graph, indexCol_t);
+
+            // Reshape updates to match input rank for scatter
+            // updates shape: [N, 1, 4] -> need [N, 4] for scatter along axis 0
+            // Remove the size-1 window dim corresponding to the scatter axis
+            NSMutableArray<NSNumber*>* reshapedUpdatesShape = [NSMutableArray array];
+            auto updatesType = mlir::cast<mlir::RankedTensorType>(
+                ctx.op->getOperand(2).getType());
+            auto updatesShape = updatesType.getShape();
+
+            // Build new shape: keep scatter dims (non-window) and window dims
+            // except drop the window dim for the scatter axis (it's size 1)
+            for (size_t d = 0; d < (size_t)updatesShape.size(); ++d) {
+                bool isScatterAxisWindow = false;
+                // Check if this update dim is the window dim for the scatter axis
+                for (size_t w = 0; w < updateWindowDimsSlice.size(); ++w) {
+                    if (updateWindowDimsSlice[w] == (int64_t)d && (int64_t)w == scatterAxis) {
+                        isScatterAxisWindow = true;
+                        break;
+                    }
+                }
+                if (isScatterAxisWindow && updatesShape[d] == 1) {
+                    continue;  // Drop the size-1 scatter axis window dim
+                }
+                [reshapedUpdatesShape addObject:@(updatesShape[d])];
+            }
+
+            MPSGraphTensor* reshapedUpdates = [ctx.graph reshapeTensor:updates
+                                                             withShape:reshapedUpdatesShape
+                                                                  name:nil];
+
+            // scatterAlongAxis requires input, updates, and indices to have the same rank.
+            // When updates rank > input rank (batch dims from scatter points), flatten
+            // the scatter batch dims so updates matches input rank.
+            NSUInteger inputRank = input.shape.count;
+            if (reshapedUpdates.shape.count > inputRank) {
+                // Flatten scatter batch dims: updates [B1, B2, ..., W1, W2, ...] -> [B1*B2*..., W1, W2, ...]
+                // The first (updatesRank - inputRank + 1) dims become one flat dim
+                NSUInteger numBatchDims = reshapedUpdates.shape.count - inputRank + 1;
+                int64_t flatBatch = 1;
+                for (NSUInteger d = 0; d < numBatchDims; ++d) {
+                    flatBatch *= [reshapedUpdates.shape[d] integerValue];
+                }
+                NSMutableArray<NSNumber*>* flatUpdatesShape = [NSMutableArray array];
+                [flatUpdatesShape addObject:@(flatBatch)];
+                for (NSUInteger d = numBatchDims; d < reshapedUpdates.shape.count; ++d) {
+                    [flatUpdatesShape addObject:reshapedUpdates.shape[d]];
+                }
+                reshapedUpdates = [ctx.graph reshapeTensor:reshapedUpdates
+                                                  withShape:flatUpdatesShape
+                                                       name:nil];
+
+                // Flatten indices similarly
+                int64_t flatIdx = 1;
+                for (NSUInteger d = 0; d < indexCol_t.shape.count; ++d) {
+                    flatIdx *= [indexCol_t.shape[d] integerValue];
+                }
+                indexCol_t = [ctx.graph reshapeTensor:indexCol_t
+                                             withShape:@[@(flatIdx)]
+                                                  name:nil];
+            }
+
+            // scatterAlongAxis requires indices to have the same shape as updates.
+            // Reshape index to [N, 1] and broadcast to match updates shape.
+            if (indexCol_t.shape.count < reshapedUpdates.shape.count) {
+                NSMutableArray<NSNumber*>* expandedIdxShape =
+                    [NSMutableArray arrayWithArray:indexCol_t.shape];
+                while (expandedIdxShape.count < reshapedUpdates.shape.count) {
+                    [expandedIdxShape addObject:@1];
+                }
+                indexCol_t = [ctx.graph reshapeTensor:indexCol_t withShape:expandedIdxShape name:nil];
+            }
+            // Broadcast indices to match updates shape
+            indexCol_t = [ctx.graph broadcastTensor:indexCol_t
+                                           toShape:reshapedUpdates.shape
+                                              name:nil];
+
+            MPSGraphScatterMode mode = GetScatterMode(scatterOp);
+            MPSGraphTensor* result = SafeScatterAlongAxis(
+                ctx.graph, static_cast<NSInteger>(scatterAxis), input,
+                reshapedUpdates, indexCol_t, mode);
+            return Result(ctx, result, "scatter");
+        }
     }
 
     // General ScatterND fallback: handles arbitrary scatter dimension numbers

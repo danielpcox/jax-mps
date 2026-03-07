@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -182,6 +182,21 @@ wheels = [
 ]
 
 [[package]]
+name = "equinox"
+version = "0.13.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jax" },
+    { name = "jaxtyping" },
+    { name = "typing-extensions" },
+    { name = "wadler-lindig" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/84/7d/069b8f75ddb904c81b5bce15531f9be533200dd0af8ef50ec8fda2415a36/equinox-0.13.5.tar.gz", hash = "sha256:562c75a578f4e7f4687350d0240276c2e607a65692145659d05e78696c5760be", size = 141924, upload-time = "2026-03-04T12:20:03.046Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/17/0c/7f0a6f45be6ab752907db34db6267f717ae78f968cdde560f4694bb50e6d/equinox-0.13.5-py3-none-any.whl", hash = "sha256:447ea97ae706c4bcb47dd6b005cb551d5bc7de1a6ff5ae9c68f2f491ccde3699", size = 182058, upload-time = "2026-03-04T12:20:01.695Z" },
+]
+
+[[package]]
 name = "etils"
 version = "1.13.0"
 source = { registry = "https://pypi.org/simple" }
@@ -332,8 +347,10 @@ name = "jax-mps"
 version = "0.9.7"
 source = { editable = "." }
 dependencies = [
+    { name = "equinox" },
     { name = "jax" },
     { name = "jaxlib" },
+    { name = "optax" },
 ]
 
 [package.dev-dependencies]
@@ -351,8 +368,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "equinox", specifier = ">=0.13.5" },
     { name = "jax", specifier = ">=0.9.0,<0.10" },
     { name = "jaxlib", specifier = ">=0.9.0,<0.10" },
+    { name = "optax", specifier = ">=0.2.6" },
 ]
 
 [package.metadata.requires-dev]
@@ -400,6 +419,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/7d/c0/c172876423623282af055b4b46bcea1fd933afc3306455e5eb6e5ef18344/jaxlib-0.9.0-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:48e315c70509f7927e379c4dd98d6e2dc2a6198677a6e0c50f1cc44199ba50d3", size = 56210812, upload-time = "2026-01-20T23:06:36.154Z" },
     { url = "https://files.pythonhosted.org/packages/49/c1/8d051e9c2860ca228b98ba068daeadd7cdd0e8e06b4a93e27cab880e36ab/jaxlib-0.9.0-cp314-cp314t-manylinux_2_27_aarch64.whl", hash = "sha256:ef8006070aaceab7bec17eaa7e1d1b9d369793ad95927a14a27be216c063cd9c", size = 74885282, upload-time = "2026-01-20T23:06:40.22Z" },
     { url = "https://files.pythonhosted.org/packages/be/9a/b8daeec1fd3f492f9cbd5a8043032be6d24b23394254ff02ba0723f6b2e8/jaxlib-0.9.0-cp314-cp314t-manylinux_2_27_x86_64.whl", hash = "sha256:866ce0a67f59fb0cc70e9b7307e70cf61e8ea3c8bad841796a471162e20056f1", size = 80437354, upload-time = "2026-01-20T23:06:44.06Z" },
+]
+
+[[package]]
+name = "jaxtyping"
+version = "0.3.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "wadler-lindig" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c2/be/00294e369938937e31b094437d5ea040e4fd1a20b998ebe572c4a1dcfa68/jaxtyping-0.3.9.tar.gz", hash = "sha256:f8c02d1b623d5f1b6665d4f3ddaec675d70004f16a792102c2fc51264190951d", size = 45857, upload-time = "2026-02-16T10:35:13.263Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/94/05/3e39d416fb92b2738a76e8265e6bfc5d10542f90a7c32ad1eb831eea3fa3/jaxtyping-0.3.9-py3-none-any.whl", hash = "sha256:a00557a9d616eff157491f06ed2e21ed94886fad3832399273eb912b345da378", size = 56274, upload-time = "2026-02-16T10:35:11.795Z" },
 ]
 
 [[package]]
@@ -1248,6 +1279,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/aa/a3/4d310fa5f00863544e1d0f4de93bddec248499ccf97d4791bc3122c9d4f3/virtualenv-20.36.1.tar.gz", hash = "sha256:8befb5c81842c641f8ee658481e42641c68b5eab3521d8e092d18320902466ba", size = 6032239, upload-time = "2026-01-09T18:21:01.296Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/6a/2a/dc2228b2888f51192c7dc766106cd475f1b768c10caaf9727659726f7391/virtualenv-20.36.1-py3-none-any.whl", hash = "sha256:575a8d6b124ef88f6f51d56d656132389f961062a9177016a50e4f507bbcc19f", size = 6008258, upload-time = "2026-01-09T18:20:59.425Z" },
+]
+
+[[package]]
+name = "wadler-lindig"
+version = "0.1.7"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1e/67/cbae4bf7683a64755c2c1778c418fea96d00e34395bb91743f08bd951571/wadler_lindig-0.1.7.tar.gz", hash = "sha256:81d14d3fe77d441acf3ebd7f4aefac20c74128bf460e84b512806dccf7b2cd55", size = 15842, upload-time = "2025-06-18T07:00:42.843Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8d/96/04e7b441807b26b794da5b11e59ed7f83b2cf8af202bd7eba8ad2fa6046e/wadler_lindig-0.1.7-py3-none-any.whl", hash = "sha256:e3ec83835570fd0a9509f969162aeb9c65618f998b1f42918cfc8d45122fe953", size = 20516, upload-time = "2025-06-18T07:00:41.684Z" },
 ]
 
 [[package]]
