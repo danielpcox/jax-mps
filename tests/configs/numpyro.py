@@ -142,22 +142,12 @@ def make_numpyro_op_configs():
                     ),  # concentration
                     differentiable_argnums=(1, 2),
                 ),
-                pytest.param(
-                    NumpyroDistributionTestConfig(
-                        dists.MultinomialProbs,
-                        lambda key, bs=batch_shape: random.dirichlet(
-                            key, jnp.ones(5), bs
-                        ),
-                        10,  # total_count (not differentiable)
-                        differentiable_argnums=(1,),
-                        name="Multinomial",
-                    ),
-                    marks=[
-                        pytest.mark.xfail(
-                            reason="Batched gather bug (#60)",
-                            strict=False,
-                        )
-                    ],
+                NumpyroDistributionTestConfig(
+                    dists.MultinomialProbs,
+                    lambda key, bs=batch_shape: random.dirichlet(key, jnp.ones(5), bs),
+                    10,  # total_count (not differentiable)
+                    differentiable_argnums=(1,),
+                    name="Multinomial",
                 ),
                 # Additional continuous distributions.
                 NumpyroDistributionTestConfig(

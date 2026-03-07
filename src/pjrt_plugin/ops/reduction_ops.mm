@@ -369,12 +369,14 @@ static ProcessResult HandlePoolingReduceWindow(HandlerContext& ctx,
     if (!hasSpatial)
         return ProcessResult::Error("reduce_window: no spatial dimensions for pooling");
 
-    // Check reduction type — pooling supports max and add (sum via avg*count).
+    // Check reduction type — pooling supports max, min (via negate-max-negate),
+    // and add (sum via avg*count).
     std::string reductionType = GetReductionOpType(rwOp.getBody());
     bool isMax = (reductionType == "stablehlo.maximum");
+    bool isMin = (reductionType == "stablehlo.minimum");
     bool isAdd = (reductionType == "stablehlo.add");
-    if (!isMax && !isAdd)
-        return ProcessResult::Error("reduce_window: pooling supports maximum/add, got: " +
+    if (!isMax && !isMin && !isAdd)
+        return ProcessResult::Error("reduce_window: pooling supports maximum/minimum/add, got: " +
                                     reductionType);
 
     // MPS provides maxPooling4D / avgPooling4D which require exactly 4D input.
@@ -421,8 +423,16 @@ static ProcessResult HandlePoolingReduceWindow(HandlerContext& ctx,
                                                     paddingStyle:MPSGraphPaddingStyleExplicit];
 
     MPSGraphTensor* result4D = nil;
-    if (isMax) {
-        result4D = [ctx.graph maxPooling4DWithSourceTensor:input4D descriptor:desc name:nil];
+    if (isMax || isMin) {
+        MPSGraphTensor* poolInput = input4D;
+        if (isMin) {
+            // min(x) = -max(-x)
+            poolInput = [ctx.graph negativeWithTensor:input4D name:nil];
+        }
+        result4D = [ctx.graph maxPooling4DWithSourceTensor:poolInput descriptor:desc name:nil];
+        if (isMin) {
+            result4D = [ctx.graph negativeWithTensor:result4D name:nil];
+        }
     } else {
         // Sum pooling = avg pooling * window_element_count.
         // With includeZeroPadToAverage=YES, avg = sum_of_window / K where

@@ -145,9 +145,22 @@ inline MPSGraphTensor* SafeGatherAlongAxis(MPSGraph* graph, NSInteger axis,
 // Safe wrapper for scatterNDWithDataTensor
 // Scatter operations have the same float32 conversion bug as gather operations.
 // Testing confirmed that scatter corrupts uint32 values > 2^24 identically to gather.
+// IMPORTANT: The bitcast workaround only works for Set mode. For arithmetic modes
+// (Add, Sub, Mul, etc.), bitcasting int to float makes the arithmetic meaningless
+// (e.g., int 1 becomes ~1.4e-45 as float, so add gives 0). Skip the workaround
+// for non-Set modes — arithmetic scatter on integers works correctly without it.
 inline MPSGraphTensor* SafeScatterND(MPSGraph* graph, MPSGraphTensor* dataTensor,
                                      MPSGraphTensor* updatesTensor, MPSGraphTensor* indicesTensor,
                                      NSUInteger batchDimensions, MPSGraphScatterMode mode) {
+    if (mode != MPSGraphScatterModeSet) {
+        return [graph scatterNDWithDataTensor:dataTensor
+                               updatesTensor:updatesTensor
+                               indicesTensor:indicesTensor
+                             batchDimensions:batchDimensions
+                                        mode:mode
+                                        name:nil];
+    }
+
     // For scatter, both data and updates need the workaround if they're integers
     MPSDataType originalDataType;
     bool dataReverse = false;
@@ -176,6 +189,15 @@ inline MPSGraphTensor* SafeScatterND(MPSGraph* graph, MPSGraphTensor* dataTensor
 inline MPSGraphTensor* SafeScatter(MPSGraph* graph, MPSGraphTensor* dataTensor,
                                    MPSGraphTensor* updatesTensor, MPSGraphTensor* indicesTensor,
                                    NSInteger axis, MPSGraphScatterMode mode) {
+    if (mode != MPSGraphScatterModeSet) {
+        return [graph scatterWithDataTensor:dataTensor
+                              updatesTensor:updatesTensor
+                              indicesTensor:indicesTensor
+                                       axis:axis
+                                       mode:mode
+                                       name:nil];
+    }
+
     MPSDataType originalDataType;
     bool dataReverse = false;
     bool dataIs64Bit = false;
@@ -204,6 +226,15 @@ inline MPSGraphTensor* SafeScatterAlongAxis(MPSGraph* graph, NSInteger axis,
                                             MPSGraphTensor* updatesTensor,
                                             MPSGraphTensor* indicesTensor,
                                             MPSGraphScatterMode mode) {
+    if (mode != MPSGraphScatterModeSet) {
+        return [graph scatterAlongAxis:axis
+                        withDataTensor:dataTensor
+                         updatesTensor:updatesTensor
+                         indicesTensor:indicesTensor
+                                  mode:mode
+                                  name:nil];
+    }
+
     MPSDataType originalDataType;
     bool dataReverse = false;
     bool dataIs64Bit = false;

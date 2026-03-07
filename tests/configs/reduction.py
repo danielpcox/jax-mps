@@ -57,7 +57,7 @@ def make_reduction_op_configs():
                 lambda x: jnp.cumprod(x, axis=1),
                 lambda key: random.uniform(key, (3, 5), minval=0.5, maxval=1.5),
                 name="cumprod-axis1",
-                differentiable_argnums=(),  # grad uses pad with interior dilation
+                differentiable_argnums=(),  # grad creates zero-sized tensors (unsupported by MPS)
             ),
             OperationTestConfig(
                 lambda x: lax.cummax(x, axis=1),
@@ -159,6 +159,34 @@ def make_reduction_op_configs():
                 ),
                 lambda key: random.normal(key, (2, 8, 8, 3)),
                 name="sumpool2d-same",
+            ),
+            # Min pool 2D: window=(1,2,2,1), stride=(1,2,2,1) VALID
+            OperationTestConfig(
+                lambda x: lax.reduce_window(
+                    x, jnp.inf, lax.min, (1, 2, 2, 1), (1, 2, 2, 1), "valid"
+                ),
+                lambda key: random.normal(key, (2, 8, 8, 3)),
+                name="minpool2d-valid",
+                # Grad requires select_and_scatter (not yet supported)
+                differentiable_argnums=(),
+            ),
+            # Min pool 1D: window=2, stride=2 on last axis (VALID padding)
+            OperationTestConfig(
+                lambda x: lax.reduce_window(
+                    x, jnp.inf, lax.min, (1, 2), (1, 2), "valid"
+                ),
+                lambda key: random.normal(key, (2, 8)),
+                name="minpool1d-valid",
+                differentiable_argnums=(),
+            ),
+            # Min pool 2D with SAME padding
+            OperationTestConfig(
+                lambda x: lax.reduce_window(
+                    x, jnp.inf, lax.min, (1, 3, 3, 1), (1, 1, 1, 1), "same"
+                ),
+                lambda key: random.normal(key, (2, 8, 8, 3)),
+                name="minpool2d-same",
+                differentiable_argnums=(),
             ),
             # Average pool 2D (sum pool divided by window area)
             OperationTestConfig(

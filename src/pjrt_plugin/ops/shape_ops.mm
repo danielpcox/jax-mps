@@ -277,12 +277,69 @@ static ProcessResult HandleSharding(HandlerContext& ctx) {
 }
 REGISTER_CUSTOM_CALL("Sharding", HandleSharding, sharding);
 
+// Helper: apply interior padding to a tensor along each dimension.
+// For each dimension with interior padding p > 0:
+//   Reshape to add axis, concat zeros, flatten, slice off trailing elements.
+// All ops used (reshape, concat, slice) have working MPS backward passes.
+static MPSGraphTensor* ApplyInteriorPadding(MPSGraph* graph, MPSGraphTensor* tensor,
+                                            llvm::ArrayRef<int64_t> interiorPadding,
+                                            NSUInteger rank) {
+    MPSGraphTensor* current = tensor;
+    for (NSUInteger dim = 0; dim < rank; dim++) {
+        int64_t interior = interiorPadding[dim];
+        if (interior <= 0)
+            continue;
+
+        NSArray<NSNumber*>* curShape = current.shape;
+        NSUInteger curRank = curShape.count;
+        int64_t dimSize = [curShape[dim] longLongValue];
+
+        // [..., N, ...] -> [..., N, 1, ...]
+        NSMutableArray<NSNumber*>* expandedShape = [NSMutableArray arrayWithCapacity:curRank + 1];
+        for (NSUInteger d = 0; d < curRank; d++) {
+            [expandedShape addObject:curShape[d]];
+            if (d == dim)
+                [expandedShape addObject:@1];
+        }
+        MPSGraphTensor* expanded = [graph reshapeTensor:current withShape:expandedShape name:nil];
+
+        // Zeros: [..., N, p, ...]
+        NSMutableArray<NSNumber*>* zerosShape = [NSMutableArray arrayWithArray:expandedShape];
+        zerosShape[dim + 1] = @(interior);
+        MPSGraphTensor* zeros = [graph constantWithScalar:0.0 dataType:current.dataType];
+        zeros = [graph broadcastTensor:zeros toShape:zerosShape name:nil];
+
+        // Concat -> [..., N, 1+p, ...], flatten -> [..., N*(1+p), ...]
+        MPSGraphTensor* interleaved = [graph concatTensors:@[expanded, zeros]
+                                                 dimension:(NSInteger)(dim + 1)
+                                                      name:nil];
+        NSMutableArray<NSNumber*>* flatShape = [NSMutableArray arrayWithCapacity:curRank];
+        for (NSUInteger d = 0; d < curRank; d++) {
+            [flatShape addObject:(d == dim) ? @(dimSize * (1 + interior)) : curShape[d]];
+        }
+        MPSGraphTensor* flat = [graph reshapeTensor:interleaved withShape:flatShape name:nil];
+
+        // Slice to [..., N + (N-1)*p, ...]
+        NSMutableArray<NSNumber*>* starts = [NSMutableArray arrayWithCapacity:curRank];
+        NSMutableArray<NSNumber*>* ends = [NSMutableArray arrayWithCapacity:curRank];
+        NSMutableArray<NSNumber*>* strides = [NSMutableArray arrayWithCapacity:curRank];
+        for (NSUInteger d = 0; d < curRank; d++) {
+            [starts addObject:@0];
+            [ends addObject:(d == dim) ? @(dimSize + (dimSize - 1) * interior) : flatShape[d]];
+            [strides addObject:@1];
+        }
+        current = [graph sliceTensor:flat starts:starts ends:ends strides:strides name:nil];
+    }
+    return current;
+}
+
 // Pad - add padding around tensor
+// Avoids sliceUpdateDataTensor which crashes MPS's backward pass (issue #59).
+// Uses padTensor for non-negative edge padding and slice for negative (crop).
 static ProcessResult HandlePad(HandlerContext& ctx) {
     auto padOp = mlir::dyn_cast<mlir::stablehlo::PadOp>(ctx.op);
-    if (!padOp) {
+    if (!padOp)
         return ProcessResult::Error("pad: expected PadOp");
-    }
 
     MPSGraphTensor* input = GetInputTensor(ctx, 0);
     MPSGraphTensor* paddingValue = GetInputTensor(ctx, 1);
@@ -290,38 +347,101 @@ static ProcessResult HandlePad(HandlerContext& ctx) {
         return ProcessResult::Error("pad: missing input tensor");
 
     auto edgePaddingLow = padOp.getEdgePaddingLow();
+    auto edgePaddingHigh = padOp.getEdgePaddingHigh();
     auto interiorPadding = padOp.getInteriorPadding();
+    NSUInteger rank = edgePaddingLow.size();
 
-    // Get output shape and create a tensor filled with padding value
-    NSArray<NSNumber*>* outputShape = GetOutputShape(ctx.op);
-    MPSGraphTensor* padded = [ctx.graph broadcastTensor:paddingValue toShape:outputShape name:nil];
+    // Step 1: Apply interior padding (if any)
+    MPSGraphTensor* current = ApplyInteriorPadding(ctx.graph, input, interiorPadding, rank);
 
-    // Calculate starts, ends, and strides for sliceUpdate (where to place the input)
-    // Interior padding of N means N padding elements between each input element,
-    // which corresponds to a stride of N+1 in the output tensor.
-    NSMutableArray<NSNumber*>* starts = [NSMutableArray array];
-    NSMutableArray<NSNumber*>* ends = [NSMutableArray array];
-    NSMutableArray<NSNumber*>* strides = [NSMutableArray array];
+    // Step 2: Handle negative edge padding (crop) via slice, then positive via padTensor.
+    // Separate negative and non-negative parts.
+    NSMutableArray<NSNumber*>* cropStarts = [NSMutableArray arrayWithCapacity:rank];
+    NSMutableArray<NSNumber*>* cropEnds = [NSMutableArray arrayWithCapacity:rank];
+    NSMutableArray<NSNumber*>* cropStrides = [NSMutableArray arrayWithCapacity:rank];
+    NSMutableArray<NSNumber*>* leftPad = [NSMutableArray arrayWithCapacity:rank];
+    NSMutableArray<NSNumber*>* rightPad = [NSMutableArray arrayWithCapacity:rank];
+    bool needsCrop = false;
+    bool needsPad = false;
 
-    NSArray<NSNumber*>* inputShape = input.shape;
-    for (NSUInteger i = 0; i < edgePaddingLow.size(); i++) {
-        int64_t start = edgePaddingLow[i];
-        int64_t inputDim = [inputShape[i] longLongValue];
-        int64_t interior = interiorPadding[i];
-        int64_t stride = interior + 1;
-        [starts addObject:@(start)];
-        [ends addObject:@(start + (inputDim - 1) * stride + 1)];
-        [strides addObject:@(stride)];
+    NSArray<NSNumber*>* curShape = current.shape;
+    for (NSUInteger i = 0; i < rank; i++) {
+        int64_t low = edgePaddingLow[i];
+        int64_t high = edgePaddingHigh[i];
+        int64_t dimSize = [curShape[i] longLongValue];
+
+        // Crop: negative padding removes elements
+        int64_t cropLow = (low < 0) ? -low : 0;
+        int64_t cropHigh = (high < 0) ? -high : 0;
+        [cropStarts addObject:@(cropLow)];
+        [cropEnds addObject:@(dimSize - cropHigh)];
+        [cropStrides addObject:@1];
+        if (cropLow > 0 || cropHigh > 0)
+            needsCrop = true;
+
+        // Pad: non-negative padding adds elements
+        int64_t padLow = (low > 0) ? low : 0;
+        int64_t padHigh = (high > 0) ? high : 0;
+        [leftPad addObject:@(padLow)];
+        [rightPad addObject:@(padHigh)];
+        if (padLow > 0 || padHigh > 0)
+            needsPad = true;
     }
 
-    // Use sliceUpdateDataTensor to insert input into the padded tensor
-    MPSGraphTensor* result = [ctx.graph sliceUpdateDataTensor:padded
-                                                 updateTensor:input
-                                                       starts:starts
-                                                         ends:ends
-                                                      strides:strides
-                                                         name:nil];
-    return Result(ctx, result, "pad");
+    if (needsCrop) {
+        current = [ctx.graph sliceTensor:current
+                                  starts:cropStarts
+                                    ends:cropEnds
+                                 strides:cropStrides
+                                    name:nil];
+    }
+
+    if (needsPad) {
+        current = [ctx.graph padTensor:current
+                       withPaddingMode:MPSGraphPaddingModeConstant
+                           leftPadding:leftPad
+                          rightPadding:rightPad
+                         constantValue:0.0
+                                  name:nil];
+    }
+
+    // Step 3: Handle non-zero padding value.
+    // padTensor pads with 0. To support arbitrary padding values, use a mask:
+    // result = current + (1 - mask) * paddingValue
+    // where mask is 1 at original data positions, 0 at padded positions.
+    if (needsPad || llvm::any_of(interiorPadding, [](int64_t p) { return p > 0; })) {
+        MPSGraphTensor* ones = [ctx.graph constantWithScalar:1.0 dataType:input.dataType];
+        ones = [ctx.graph broadcastTensor:ones toShape:input.shape name:nil];
+        MPSGraphTensor* mask = ApplyInteriorPadding(ctx.graph, ones, interiorPadding, rank);
+        if (needsCrop) {
+            mask = [ctx.graph sliceTensor:mask
+                                  starts:cropStarts
+                                    ends:cropEnds
+                                 strides:cropStrides
+                                    name:nil];
+        }
+        if (needsPad) {
+            mask = [ctx.graph padTensor:mask
+                       withPaddingMode:MPSGraphPaddingModeConstant
+                           leftPadding:leftPad
+                          rightPadding:rightPad
+                         constantValue:0.0
+                                  name:nil];
+        }
+
+        MPSGraphTensor* invMask = [ctx.graph subtractionWithPrimaryTensor:
+                                    [ctx.graph constantWithScalar:1.0 dataType:mask.dataType]
+                                                        secondaryTensor:mask
+                                                                   name:nil];
+        MPSGraphTensor* padFill = [ctx.graph multiplicationWithPrimaryTensor:invMask
+                                                            secondaryTensor:paddingValue
+                                                                       name:nil];
+        current = [ctx.graph additionWithPrimaryTensor:current
+                                      secondaryTensor:padFill
+                                                 name:nil];
+    }
+
+    return Result(ctx, current, "pad");
 }
 REGISTER_MPS_OP("stablehlo.pad", HandlePad);
 
