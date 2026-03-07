@@ -940,20 +940,21 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
             }
 
             // Gather with offset dimensions: some dims pass through, others are point-gathered.
-            // Strategy: transpose operand so offset dims come first, then flatten indexed dims,
+            // Strategy: transpose operand so indexed dims come first, then flatten indexed dims,
             // compute flat indices from multi-dim index coordinates, and gather along the flat axis.
+            // This produces [N, offset_dims...] directly, which we then transpose if needed.
 
-            // Build permutation: offset dims first, then indexed dims
+            // Build permutation: indexed dims first, then offset dims
             llvm::SmallVector<int64_t> perm;
             llvm::SmallVector<int64_t> offsetOperandDims;
+            for (int64_t d : sortedMap) {
+                perm.push_back(d);
+            }
             for (NSUInteger d = 0; d < operandRank; ++d) {
                 if (!indexedDimSet.count(d)) {
                     perm.push_back(d);
                     offsetOperandDims.push_back(d);
                 }
-            }
-            for (int64_t d : sortedMap) {
-                perm.push_back(d);
             }
 
             // Check if permutation is identity (no transpose needed)
@@ -977,17 +978,17 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
             }
 
             // Flatten the indexed dimensions into one.
-            // After transpose, shape is [offset_dim0, ..., offset_dimK, idx_dim0, ..., idx_dimM]
+            // After transpose, shape is [idx_dim0, ..., idx_dimM, offset_dim0, ..., offset_dimK]
+            NSUInteger numIndexedDims = sortedMap.size();
             NSMutableArray<NSNumber*>* flatShape = [NSMutableArray array];
             int64_t flatIndexedSize = 1;
-            for (NSUInteger d = 0; d < operandRank; ++d) {
-                if (d < offsetOperandDims.size()) {
-                    [flatShape addObject:transposed.shape[d]];
-                } else {
-                    flatIndexedSize *= [transposed.shape[d] integerValue];
-                }
+            for (NSUInteger d = 0; d < numIndexedDims; ++d) {
+                flatIndexedSize *= [transposed.shape[d] integerValue];
             }
             [flatShape addObject:@(flatIndexedSize)];
+            for (NSUInteger d = numIndexedDims; d < operandRank; ++d) {
+                [flatShape addObject:transposed.shape[d]];
+            }
 
             MPSGraphTensor* flatOperand = [ctx.graph reshapeTensor:transposed
                                                          withShape:flatShape
@@ -1069,26 +1070,26 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
                 }
             }
 
-            // Gather along the flattened indexed axis
-            NSUInteger gatherAxis = offsetOperandDims.size();
+            // Gather along the flattened indexed axis (axis 0, since indexed dims are first)
+            NSUInteger gatherAxis = 0;
 
             // Reshape flatIndices for broadcasting: add size-1 dims for offset dims
             // then broadcast to match operand shape in all non-gather dimensions
             NSMutableArray<NSNumber*>* gatherIndicesShape = [NSMutableArray array];
-            for (NSUInteger d = 0; d < gatherAxis; ++d) {
-                [gatherIndicesShape addObject:flatOperand.shape[d]];
-            }
             for (NSUInteger d = 0; d < flatIndices.shape.count; ++d) {
                 [gatherIndicesShape addObject:flatIndices.shape[d]];
+            }
+            for (NSUInteger d = 1; d < flatOperand.shape.count; ++d) {
+                [gatherIndicesShape addObject:flatOperand.shape[d]];
             }
 
             // First reshape to add dims, then broadcast
             NSMutableArray<NSNumber*>* unsqueezedShape = [NSMutableArray array];
-            for (NSUInteger d = 0; d < gatherAxis; ++d) {
-                [unsqueezedShape addObject:@1];
-            }
             for (NSUInteger d = 0; d < flatIndices.shape.count; ++d) {
                 [unsqueezedShape addObject:flatIndices.shape[d]];
+            }
+            for (NSUInteger d = 1; d < flatOperand.shape.count; ++d) {
+                [unsqueezedShape addObject:@1];
             }
             MPSGraphTensor* reshapedIndices = [ctx.graph reshapeTensor:flatIndices
                                                              withShape:unsqueezedShape
@@ -1100,8 +1101,48 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
             MPSGraphTensor* gathered = SafeGatherAlongAxis(ctx.graph, (NSInteger)gatherAxis,
                                                            flatOperand, reshapedIndices);
 
-            // Reshape to expected output shape
+            // After gathering, result shape is [N0, N1, ..., offset_0, offset_1, ...].
+            // The output needs offset dims at positions specified by offsetDims
+            // and index dims at the remaining positions.
+            // Build a permutation to reorder: for each output position,
+            // determine which after-gather dimension goes there.
             NSArray<NSNumber*>* outputShape = GetOutputShape(ctx.op);
+            NSUInteger outputRank = outputShape.count;
+            NSUInteger numIndexDims = flatIndices.shape.count;
+            NSUInteger numOffsetDims = offsetDims.size();
+
+            // Map output positions: offset dims go to specified positions,
+            // index dims fill the rest in order.
+            llvm::SmallDenseSet<int64_t, 4> offsetDimSet(offsetDims.begin(), offsetDims.end());
+            NSMutableArray<NSNumber*>* postPerm = [NSMutableArray array];
+            NSUInteger idxPos = 0;
+            NSUInteger offPos = 0;
+            for (NSUInteger d = 0; d < outputRank; ++d) {
+                if (offsetDimSet.count(d)) {
+                    // This output position is an offset dim
+                    [postPerm addObject:@(numIndexDims + offPos)];
+                    offPos++;
+                } else {
+                    // This output position is an index dim
+                    [postPerm addObject:@(idxPos)];
+                    idxPos++;
+                }
+            }
+
+            // Check if permutation is identity
+            bool needsPostTranspose = false;
+            for (NSUInteger d = 0; d < outputRank; ++d) {
+                if ([postPerm[d] unsignedIntegerValue] != d) {
+                    needsPostTranspose = true;
+                    break;
+                }
+            }
+
+            if (needsPostTranspose) {
+                gathered = [ctx.graph transposeTensor:gathered permutation:postPerm name:nil];
+            }
+
+            // Reshape to expected output shape
             gathered = [ctx.graph reshapeTensor:gathered withShape:outputShape name:nil];
 
             return Result(ctx, gathered, "gather");
