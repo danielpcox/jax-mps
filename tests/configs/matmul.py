@@ -181,6 +181,15 @@ def make_matmul_op_configs():
             name="outer_product",
         )
 
+        # Integer matmul: MPS matmul requires float, so we cast int->float->int
+        yield OperationTestConfig(
+            jnp.matmul,
+            lambda key: random.randint(key, (3, 4), 0, 10),
+            lambda key: random.randint(key, (4, 5), 0, 10),
+            differentiable_argnums=(),
+            name="int_matmul",
+        )
+
         # Edge case: zero batch size (empty batch dimension)
         # CPU handles this correctly, returning empty arrays with the right shape.
         # Forward pass works via zero-sized tensor handling, but grad

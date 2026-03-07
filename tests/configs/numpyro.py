@@ -121,10 +121,17 @@ def make_numpyro_op_configs():
                     differentiable_argnums=(1,),
                     name="Categorical",
                 ),
-                NumpyroDistributionTestConfig(
-                    dists.Poisson,
-                    lambda key, bs=batch_shape: random.gamma(key, 5.0, bs),
-                    differentiable_argnums=(1,),
+                pytest.param(
+                    NumpyroDistributionTestConfig(
+                        dists.Poisson,
+                        lambda key, bs=batch_shape: random.gamma(key, 5.0, bs),
+                        differentiable_argnums=(1,),
+                    ),
+                    marks=[
+                        pytest.mark.skip(
+                            reason="Segfaults on MPS (issue #57). Same root cause as Binomial."
+                        )
+                    ],
                 ),
                 NumpyroDistributionTestConfig(
                     dists.GeometricProbs,
@@ -134,13 +141,20 @@ def make_numpyro_op_configs():
                     differentiable_argnums=(1,),
                     name="Geometric",
                 ),
-                NumpyroDistributionTestConfig(
-                    dists.NegativeBinomial2,
-                    lambda key, bs=batch_shape: random.gamma(key, 5.0, bs),  # mean
-                    lambda key, bs=batch_shape: random.gamma(
-                        key, 5.0, bs
-                    ),  # concentration
-                    differentiable_argnums=(1, 2),
+                pytest.param(
+                    NumpyroDistributionTestConfig(
+                        dists.NegativeBinomial2,
+                        lambda key, bs=batch_shape: random.gamma(key, 5.0, bs),  # mean
+                        lambda key, bs=batch_shape: random.gamma(
+                            key, 5.0, bs
+                        ),  # concentration
+                        differentiable_argnums=(1, 2),
+                    ),
+                    marks=[
+                        pytest.mark.skip(
+                            reason="Segfaults on MPS (issue #57). Uses Poisson internally."
+                        )
+                    ],
                 ),
                 NumpyroDistributionTestConfig(
                     dists.MultinomialProbs,
@@ -183,14 +197,21 @@ def make_numpyro_op_configs():
                     ),  # concentration
                     lambda key, bs=batch_shape: random.gamma(key, 5.0, bs),  # rate
                 ),
-                NumpyroDistributionTestConfig(
-                    dists.VonMises,
-                    lambda key, bs=batch_shape: random.uniform(
-                        key, bs, minval=-jnp.pi, maxval=jnp.pi
-                    ),  # loc
-                    lambda key, bs=batch_shape: random.gamma(
-                        key, 5.0, bs
-                    ),  # concentration
+                pytest.param(
+                    NumpyroDistributionTestConfig(
+                        dists.VonMises,
+                        lambda key, bs=batch_shape: random.uniform(
+                            key, bs, minval=-jnp.pi, maxval=jnp.pi
+                        ),  # loc
+                        lambda key, bs=batch_shape: random.gamma(
+                            key, 5.0, bs
+                        ),  # concentration
+                    ),
+                    marks=[
+                        pytest.mark.skip(
+                            reason="Segfaults on MPS (issue #57). von_mises_centered uses while_loop with crashing ops."
+                        )
+                    ],
                 ),
                 # Multivariate distributions.
                 NumpyroDistributionTestConfig(
