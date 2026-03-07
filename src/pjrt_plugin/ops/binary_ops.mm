@@ -112,6 +112,35 @@ static ProcessResult HandleDotGeneral(HandlerContext& ctx) {
     if (!lhs || !rhs)
         return ProcessResult::Error("dot_general: missing input tensor");
 
+    // MPS matmul only supports float/complex types. Cast integer inputs to float32,
+    // perform the matmul, then cast back to the original output type.
+    MPSDataType origLhsType = lhs.dataType;
+    MPSDataType origRhsType = rhs.dataType;
+    bool needsIntCast = false;
+    MPSDataType outputIntType = MPSDataTypeFloat32;
+
+    if (origLhsType == MPSDataTypeInt32 || origLhsType == MPSDataTypeInt16 ||
+        origLhsType == MPSDataTypeInt8 || origLhsType == MPSDataTypeUInt32 ||
+        origLhsType == MPSDataTypeUInt16 || origLhsType == MPSDataTypeUInt8 ||
+        origLhsType == MPSDataTypeBool) {
+        needsIntCast = true;
+        // Determine output type from the MLIR result type
+        auto resultType = mlir::dyn_cast<mlir::RankedTensorType>(dotOp->getResult(0).getType());
+        if (resultType) {
+            auto elemType = resultType.getElementType();
+            if (elemType.isInteger(1))
+                outputIntType = MPSDataTypeBool;
+            else if (elemType.isInteger(32))
+                outputIntType = MPSDataTypeInt32;
+            else if (elemType.isInteger(16))
+                outputIntType = MPSDataTypeInt16;
+            else if (elemType.isInteger(8))
+                outputIntType = MPSDataTypeInt8;
+        }
+        lhs = [ctx.graph castTensor:lhs toType:MPSDataTypeFloat32 name:nil];
+        rhs = [ctx.graph castTensor:rhs toType:MPSDataTypeFloat32 name:nil];
+    }
+
     auto dimNumbers = dotOp.getDotDimensionNumbers();
     auto lhsContractingDims = dimNumbers.getLhsContractingDimensions();
     auto rhsContractingDims = dimNumbers.getRhsContractingDimensions();
@@ -388,6 +417,11 @@ static ProcessResult HandleDotGeneral(HandlerContext& ctx) {
         return ProcessResult::Error(
             "dot_general: unsupported dimension configuration (LHS rank " +
             std::to_string(lhsRank) + ", RHS rank " + std::to_string(rhsRank) + ")");
+    }
+
+    // Cast back from float32 to the original integer output type
+    if (needsIntCast) {
+        result = [ctx.graph castTensor:result toType:outputIntType name:nil];
     }
 
     return Result(ctx, result, "dot_general");
