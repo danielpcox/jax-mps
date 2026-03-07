@@ -278,3 +278,106 @@ def make_linalg_op_configs():
             differentiable_argnums=(0,),
             name="slogdet_logabsdet_3x3",
         )
+
+        # --- SVD (via Accelerate LAPACK sgesdd_) ---
+
+        # Full SVD on square matrices
+        for n in [2, 3, 4]:
+            yield OperationTestConfig(
+                lambda x: jnp.linalg.svd(x, full_matrices=True)[1],
+                lambda key, n=n: random.normal(key, (n, n)),
+                differentiable_argnums=(0,),
+                name=f"svd_s_full_{n}x{n}",
+            )
+
+        # Reduced SVD on square matrix
+        yield OperationTestConfig(
+            lambda x: jnp.linalg.svd(x, full_matrices=False)[1],
+            lambda key: random.normal(key, (3, 3)),
+            differentiable_argnums=(0,),
+            name="svd_s_reduced_3x3",
+        )
+
+        # SVD on tall matrices
+        for m, n in [(5, 3), (4, 2), (6, 4)]:
+            yield OperationTestConfig(
+                lambda x: jnp.linalg.svd(x, full_matrices=False)[1],
+                lambda key, m=m, n=n: random.normal(key, (m, n)),
+                differentiable_argnums=(0,),
+                name=f"svd_s_tall_{m}x{n}",
+            )
+
+        # SVD on wide matrices
+        for m, n in [(3, 5), (2, 4)]:
+            yield OperationTestConfig(
+                lambda x: jnp.linalg.svd(x, full_matrices=False)[1],
+                lambda key, m=m, n=n: random.normal(key, (m, n)),
+                differentiable_argnums=(0,),
+                name=f"svd_s_wide_{m}x{n}",
+            )
+
+        # Full SVD: verify U shape
+        yield OperationTestConfig(
+            lambda x: jnp.linalg.svd(x, full_matrices=True)[0],
+            lambda key: random.normal(key, (4, 3)),
+            differentiable_argnums=(),
+            name="svd_U_full_4x3",
+        )
+
+        # Full SVD: verify Vt shape
+        yield OperationTestConfig(
+            lambda x: jnp.linalg.svd(x, full_matrices=True)[2],
+            lambda key: random.normal(key, (4, 3)),
+            differentiable_argnums=(),
+            name="svd_Vt_full_4x3",
+        )
+
+        # Batched SVD
+        for batch_shape in [(2,), (2, 3)]:
+            batch_str = "x".join(map(str, batch_shape))
+            yield OperationTestConfig(
+                lambda x: jnp.linalg.svd(x, full_matrices=False)[1],
+                lambda key, bs=batch_shape: random.normal(key, (*bs, 3, 4)),
+                differentiable_argnums=(0,),
+                name=f"svd_s_batched_{batch_str}",
+            )
+
+        # --- pinv (uses SVD internally) ---
+
+        for n in [2, 3, 4]:
+            yield OperationTestConfig(
+                jnp.linalg.pinv,
+                lambda key, n=n: random.normal(key, (n, n)),
+                name=f"pinv_{n}x{n}",
+            )
+
+        # pinv of tall matrix
+        yield OperationTestConfig(
+            jnp.linalg.pinv,
+            lambda key: random.normal(key, (4, 3)),
+            name="pinv_4x3",
+        )
+
+        # --- lstsq (uses SVD internally) ---
+
+        yield OperationTestConfig(
+            lambda A, b: jnp.linalg.lstsq(A, b)[0],
+            lambda key: random.normal(key, (3, 3)),
+            lambda key: random.normal(key, (3, 1)),
+            name="lstsq_3x3",
+        )
+
+        # --- matrix norm and cond (use SVD internally) ---
+
+        yield OperationTestConfig(
+            lambda x: jnp.linalg.cond(x),
+            lambda key: _random_posdef(key, 3),
+            name="cond_3x3",
+        )
+
+        yield OperationTestConfig(
+            lambda x: jnp.linalg.matrix_rank(x),
+            lambda key: random.normal(key, (3, 3)),
+            differentiable_argnums=(),
+            name="matrix_rank_3x3",
+        )

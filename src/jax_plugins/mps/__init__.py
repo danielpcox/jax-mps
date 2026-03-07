@@ -109,13 +109,72 @@ def _register_lowering_rules():
             )
             return op.results
 
+        def _svd_mps_lowering(
+            ctx,
+            operand,
+            *,
+            full_matrices,
+            compute_uv,
+            subset_by_index,
+            algorithm,
+        ):
+            """Lower svd to custom_call @mps_sgesdd."""
+            import numpy as np
+            from jax._src.core import ShapedArray
+
+            operand_aval = ctx.avals_in[0]
+            m, n = operand_aval.shape[-2:]
+            batch_dims = operand_aval.shape[:-2]
+            k = min(m, n)
+
+            s_aval = ctx.avals_out[0]
+
+            if compute_uv:
+                _, u_aval, vt_aval = ctx.avals_out
+            else:
+                u_aval = ShapedArray(
+                    (*batch_dims, m, m if full_matrices else k),
+                    operand_aval.dtype,
+                )
+                vt_aval = ShapedArray(
+                    (*batch_dims, n if full_matrices else k, n),
+                    operand_aval.dtype,
+                )
+
+            # Our custom call returns (s, u, vt) - 3 results always
+            result_types = [
+                mlir.aval_to_ir_type(s_aval),
+                mlir.aval_to_ir_type(u_aval),
+                mlir.aval_to_ir_type(vt_aval),
+            ]
+            # Encode full_matrices and compute_uv in backend_config as a simple string
+            config = f"{int(full_matrices)},{int(compute_uv)}"
+            op = mlir.custom_call(
+                "mps_sgesdd",
+                result_types=result_types,
+                operands=[operand],
+                api_version=1,
+                backend_config=config,
+            )
+            # Check info and replace with NaN on failure
+            s = op.results[0]
+            results = [s]
+            if compute_uv:
+                results.append(op.results[1])
+                results.append(op.results[2])
+            return results
+
         # Register under "mps" (backend platform name used during lowering lookup).
         # JAX's register_lowering validates against known_platforms() which includes
         # "METAL" from the PJRT plugin, but lowering dispatch uses the backend name
         # "mps". We register directly into the platform-specific lowerings dict.
-        mlir._platform_specific_lowerings.setdefault("mps", {})[
-            lax_linalg.eigh_p
-        ] = mlir.LoweringRuleEntry(_eigh_mps_lowering, True)
+        mps_lowerings = mlir._platform_specific_lowerings.setdefault("mps", {})
+        mps_lowerings[lax_linalg.eigh_p] = mlir.LoweringRuleEntry(
+            _eigh_mps_lowering, True
+        )
+        mps_lowerings[lax_linalg.svd_p] = mlir.LoweringRuleEntry(
+            _svd_mps_lowering, True
+        )
     except Exception:
         pass  # Don't fail initialization if lowering registration fails
 

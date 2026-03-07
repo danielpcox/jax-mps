@@ -1,6 +1,6 @@
-// Linear algebra operations: cholesky, triangular_solve, QR, eigh
+// Linear algebra operations: cholesky, triangular_solve, QR, eigh, SVD
 // Uses native MPS kernels (MPSMatrixDecompositionCholesky, MPSMatrixSolveTriangular)
-// and Accelerate LAPACK (sgeqrf_, sorgqr_, ssyevd_) for operations not
+// and Accelerate LAPACK (sgeqrf_, sorgqr_, ssyevd_, sgesdd_) for operations not
 // available in MPS Graph.
 
 #import <Accelerate/Accelerate.h>
@@ -759,5 +759,131 @@ static NativeResult NativeHandle_Syevd(id<MTLDevice> device, id<MTLCommandBuffer
 
 static bool _cc_reg_Syevd =
     CustomCallRegistry::Register("mps_syevd", OpHandler::Native(NativeHandle_Syevd));
+
+// ---------------------------------------------------------------------------
+// SVD via Accelerate LAPACK (sgesdd_ – divide and conquer)
+// ---------------------------------------------------------------------------
+// custom_call @"mps_sgesdd": computes singular value decomposition
+// Input: tensor<...xMxNxf32> (matrix)
+// Output 0: tensor<...xKxf32> (singular values, K = min(M, N))
+// Output 1: tensor<...xMxKxf32> or tensor<...xMxMxf32> (U matrix)
+// Output 2: tensor<...xKxNxf32> or tensor<...xNxNxf32> (Vt matrix)
+
+static NativeResult NativeHandle_Sgesdd(id<MTLDevice> device, id<MTLCommandBuffer> cmdBuf,
+                                         mlir::Operation* op,
+                                         const std::vector<id<MTLBuffer>>& inputs) {
+    if (inputs.empty())
+        return NativeResult::Error("Sgesdd: missing input");
+
+    auto customCallOp = mlir::dyn_cast<mlir::stablehlo::CustomCallOp>(op);
+    if (!customCallOp || op->getNumResults() != 3)
+        return NativeResult::Error("Sgesdd: expected CustomCallOp with 3 results");
+
+    auto inputType = mlir::cast<mlir::RankedTensorType>(op->getOperand(0).getType());
+    auto shape = inputType.getShape();
+    if (shape.size() < 2)
+        return NativeResult::Error("Sgesdd: expected at least rank 2");
+    if (!inputType.getElementType().isF32())
+        return NativeResult::Error("Sgesdd: only float32 supported");
+
+    int64_t m = shape[shape.size() - 2];
+    int64_t n = shape[shape.size() - 1];
+    int64_t k = std::min(m, n);
+
+    // Get output shapes from result types
+    auto sType = mlir::cast<mlir::RankedTensorType>(op->getResult(0).getType());
+    auto uType = mlir::cast<mlir::RankedTensorType>(op->getResult(1).getType());
+    auto vtType = mlir::cast<mlir::RankedTensorType>(op->getResult(2).getType());
+    auto uShape = uType.getShape();
+    auto vtShape = vtType.getShape();
+
+    int64_t uRows = uShape[uShape.size() - 2];
+    int64_t uCols = uShape[uShape.size() - 1];
+    int64_t vtRows = vtShape[vtShape.size() - 2];
+    int64_t vtCols = vtShape[vtShape.size() - 1];
+
+    // Determine if full_matrices from output shapes
+    bool full_matrices = (uCols == m) || (vtRows == n);
+
+    // Compute batch size
+    int64_t batchSize = 1;
+    for (size_t i = 0; i < shape.size() - 2; i++)
+        batchSize *= shape[i];
+
+    size_t inputMatrixSize = (size_t)(m * n) * sizeof(float);
+    size_t sSize = (size_t)k * sizeof(float);
+    size_t uSize = (size_t)(uRows * uCols) * sizeof(float);
+    size_t vtSize = (size_t)(vtRows * vtCols) * sizeof(float);
+
+    id<MTLBuffer> outS = [device newBufferWithLength:(size_t)batchSize * sSize
+                                              options:MTLResourceStorageModeShared];
+    id<MTLBuffer> outU = [device newBufferWithLength:(size_t)batchSize * uSize
+                                              options:MTLResourceStorageModeShared];
+    id<MTLBuffer> outVt = [device newBufferWithLength:(size_t)batchSize * vtSize
+                                               options:MTLResourceStorageModeShared];
+
+    for (int64_t b = 0; b < batchSize; b++) {
+        const float* aIn = (const float*)inputs[0].contents + b * m * n;
+        float* s = (float*)outS.contents + b * k;
+        float* u = (float*)outU.contents + b * uRows * uCols;
+        float* vt = (float*)outVt.contents + b * vtRows * vtCols;
+
+        // Transpose input to column-major for LAPACK
+        std::vector<float> aCm(m * n);
+        for (int64_t i = 0; i < m; i++)
+            for (int64_t j = 0; j < n; j++)
+                aCm[j * m + i] = aIn[i * n + j];
+
+        // LAPACK output dimensions (column-major)
+        // U is m×ucols in column-major, Vt is vtrows×n in column-major
+        int64_t lapack_ucols = full_matrices ? m : k;
+        int64_t lapack_vtrows = full_matrices ? n : k;
+        std::vector<float> uCm(m * lapack_ucols);
+        std::vector<float> vtCm(lapack_vtrows * n);
+
+        char jobz = full_matrices ? 'A' : 'S';
+        __CLPK_integer lm = (__CLPK_integer)m;
+        __CLPK_integer ln = (__CLPK_integer)n;
+        __CLPK_integer lda = (__CLPK_integer)m;
+        __CLPK_integer ldu = (__CLPK_integer)m;
+        __CLPK_integer ldvt = (__CLPK_integer)lapack_vtrows;
+        __CLPK_integer info = 0;
+        __CLPK_integer lwork = -1;
+
+        // Query optimal workspace
+        float work_query;
+        __CLPK_integer iwork_buf[8 * std::min(m, n)];
+        sgesdd_(&jobz, &lm, &ln, aCm.data(), &lda, s, uCm.data(), &ldu,
+                vtCm.data(), &ldvt, &work_query, &lwork, iwork_buf, &info);
+        lwork = (__CLPK_integer)work_query;
+        std::vector<float> work(lwork);
+        std::vector<__CLPK_integer> iwork(8 * k);
+
+        // Compute SVD
+        sgesdd_(&jobz, &lm, &ln, aCm.data(), &lda, s, uCm.data(), &ldu,
+                vtCm.data(), &ldvt, work.data(), &lwork, iwork.data(), &info);
+        if (info != 0)
+            return NativeResult::Error("Sgesdd: sgesdd failed with info=" + std::to_string(info));
+
+        // Transpose U from column-major to row-major
+        // LAPACK U (col-major): m × lapack_ucols, U[i,j] = uCm[j*m + i]
+        // Output U (row-major): uRows × uCols
+        for (int64_t i = 0; i < uRows; i++)
+            for (int64_t j = 0; j < uCols; j++)
+                u[i * uCols + j] = uCm[j * m + i];
+
+        // Transpose Vt from column-major to row-major
+        // LAPACK Vt (col-major): lapack_vtrows × n, Vt[i,j] = vtCm[j*lapack_vtrows + i]
+        // Output Vt (row-major): vtRows × vtCols
+        for (int64_t i = 0; i < vtRows; i++)
+            for (int64_t j = 0; j < vtCols; j++)
+                vt[i * vtCols + j] = vtCm[j * lapack_vtrows + i];
+    }
+
+    return NativeResult::Buffers({outS, outU, outVt});
+}
+
+static bool _cc_reg_Sgesdd =
+    CustomCallRegistry::Register("mps_sgesdd", OpHandler::Native(NativeHandle_Sgesdd));
 
 }  // namespace jax_mps
