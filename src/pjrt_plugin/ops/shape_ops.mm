@@ -959,33 +959,47 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
     NSArray<NSNumber*>* indicesShape = scatterIndices.shape;
     NSUInteger indicesRank = indicesShape.count;
 
-    // Handle batched scatter pattern used by sort gradients:
+    // Handle batched scatter pattern:
     // Pattern: scatter with batching dimensions where each batch element scatters independently
-    // Example: input [5,7], indices [5,7,1], updates [5,7]
-    //   - input_batching_dims = [0], scatter_indices_batching_dims = [0]
-    //   - For each batch i, scatter updates[i,:] into input[i,:] at indices[i,:,0]
+    // Variant 1 (sort gradients): insertedWindowDims has the scatter dim
+    //   Example: input [5,7], indices [5,7,1], updates [5,7]
+    // Variant 2 (gather gradients): insertedWindowDims empty, update_window_dims has trailing dim
+    //   Example: input [3,10], indices [3,1], updates [3,1]
+    auto updateWindowDimsForBatched = dimNumbers.getUpdateWindowDims();
     if (!inputBatchingDims.empty() && !scatterIndicesBatchingDims.empty() &&
         inputBatchingDims.size() == scatterIndicesBatchingDims.size() &&
-        scatterDimsToOperandDims.size() == 1 && insertedWindowDims.size() == 1 &&
+        scatterDimsToOperandDims.size() == 1 &&
         indexVectorDim == (int64_t)indicesRank - 1 &&
-        [indicesShape[indicesRank - 1] integerValue] == 1) {
+        [indicesShape[indicesRank - 1] integerValue] == 1 &&
+        (insertedWindowDims.size() == 1 ||
+         (insertedWindowDims.empty() && updateWindowDimsForBatched.size() == 1))) {
         int64_t scatterAxis = scatterDimsToOperandDims[0];
 
-        // Squeeze the index vector dimension from indices: [batch..., N, 1] -> [batch..., N]
-        NSMutableArray<NSNumber*>* squeezedShape = [NSMutableArray array];
-        for (NSUInteger i = 0; i < indicesRank - 1; i++) {
-            [squeezedShape addObject:indicesShape[i]];
+        MPSGraphTensor* scatterUpdates = updates;
+        MPSGraphTensor* scatterIdx = scatterIndices;
+
+        if (insertedWindowDims.size() == 1) {
+            // Variant 1: indices [batch..., N, 1] -> squeeze index vector dim -> [batch..., N]
+            NSMutableArray<NSNumber*>* squeezedShape = [NSMutableArray array];
+            for (NSUInteger i = 0; i < indicesRank - 1; i++) {
+                [squeezedShape addObject:indicesShape[i]];
+            }
+            scatterIdx = [ctx.graph reshapeTensor:scatterIndices
+                                         withShape:squeezedShape
+                                              name:nil];
+        } else {
+            // Variant 2: indices [batch, 1], updates [batch, 1]
+            // scatterAlongAxis needs indices to have same rank as input.
+            // Indices already have the right shape [batch, 1] for axis=scatterAxis.
+            // Just use them directly (index_vector_dim semantics: the last dim
+            // is the index coordinate, which has size 1 for single-dim scatter).
         }
-        MPSGraphTensor* squeezedIndices = [ctx.graph reshapeTensor:scatterIndices
-                                                         withShape:squeezedShape
-                                                              name:nil];
-        squeezedIndices = EnsureInt32(ctx.graph, squeezedIndices);
+        scatterIdx = EnsureInt32(ctx.graph, scatterIdx);
 
         MPSGraphScatterMode mode = GetScatterMode(scatterOp);
 
-        // Use SafeScatterAlongAxis to handle integer precision issues
         MPSGraphTensor* result = SafeScatterAlongAxis(
-            ctx.graph, static_cast<NSInteger>(scatterAxis), input, updates, squeezedIndices, mode);
+            ctx.graph, static_cast<NSInteger>(scatterAxis), input, scatterUpdates, scatterIdx, mode);
         return Result(ctx, result, "scatter");
     }
 

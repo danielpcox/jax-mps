@@ -181,7 +181,6 @@ def make_slice_op_configs():
                 lambda key: random.normal(key, (3, 10)),
                 lambda key: random.randint(key, (3,), 0, 10),
                 name="batched_single_axis_gather",
-                grad_xfail="scatter:.+general fallback requires insertedWindowDims",
             ),
             # Large integer gather tests: verify integers > 2^24 are preserved
             # These test the bitcast workaround for MPS gather operations
