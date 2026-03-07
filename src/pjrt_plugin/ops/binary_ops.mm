@@ -307,7 +307,7 @@ static ProcessResult HandleDotGeneral(HandlerContext& ctx) {
     // and free dims. Strategy: transpose to [batch, free, contract] × [batch, contract, free],
     // flatten each group, do 3D batched matmul [B,M,K]×[B,K,N], reshape to output.
     // Output order per StableHLO spec: [batch..., lhs_free..., rhs_free...]
-    if (!result && !lhsContractingDims.empty()) {
+    if (!result && (!lhsContractingDims.empty() || !lhsBatchDims.empty())) {
         llvm::SmallDenseSet<int64_t, 4> lhsBatchSet(lhsBatchDims.begin(), lhsBatchDims.end());
         llvm::SmallDenseSet<int64_t, 4> rhsBatchSet(rhsBatchDims.begin(), rhsBatchDims.end());
         llvm::SmallDenseSet<int64_t, 4> lhsContractSet(lhsContractingDims.begin(),
