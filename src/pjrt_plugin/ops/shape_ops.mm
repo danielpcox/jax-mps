@@ -537,6 +537,7 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
     // Example: operand [3,10], indices [3,1]
     //   - operand_batching_dims = [0], start_indices_batching_dims = [0]
     //   - For each batch i, gather operand[i,:] at indices[i,0]
+    // Also handles batched gather with collapsed dims and offset dims (e.g., from batched LU).
     if (!operandBatchingDims.empty() && !startIndicesBatchingDims.empty() &&
         operandBatchingDims.size() == startIndicesBatchingDims.size() &&
         operandBatchingDims == startIndicesBatchingDims && startIndexMap.size() == 1 &&
@@ -552,9 +553,18 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
             numGatherPoints *= [indicesShape[i] integerValue];
         }
 
-        // Build indices shape matching operand rank: batch dims get batch sizes,
-        // gather axis gets N, other dims get 1 (for broadcasting).
+        // Build indices shape for reshape: [batch..., N] (squeeze the trailing 1).
+        // Then build broadcast shape matching operand rank:
+        //   - batch dims get batch sizes
+        //   - gather axis gets N
+        //   - other dims (offset dims) get operand sizes (for broadcast)
+        NSMutableArray<NSNumber*>* squeezedShape = [NSMutableArray array];
+        for (NSUInteger i = 0; i < indicesRank - 1; ++i) {
+            [squeezedShape addObject:indicesShape[i]];
+        }
+
         NSMutableArray<NSNumber*>* expandedShape = [NSMutableArray array];
+        NSMutableArray<NSNumber*>* broadcastShape = [NSMutableArray array];
         NSUInteger operandRank = operand.shape.count;
         for (NSUInteger d = 0; d < operandRank; d++) {
             bool isBatchDim = false;
@@ -566,10 +576,15 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
             }
             if (isBatchDim) {
                 [expandedShape addObject:operand.shape[d]];
+                [broadcastShape addObject:operand.shape[d]];
             } else if ((int64_t)d == gatherAxis) {
                 [expandedShape addObject:@(numGatherPoints)];
+                [broadcastShape addObject:@(numGatherPoints)];
             } else {
+                // For gatherAlongAxis, indices must match operand shape
+                // in all dimensions except the gather axis
                 [expandedShape addObject:@1];
+                [broadcastShape addObject:operand.shape[d]];
             }
         }
 
@@ -577,6 +592,9 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
                                                          withShape:expandedShape
                                                               name:nil];
         reshapedIndices = EnsureInt32(ctx.graph, reshapedIndices);
+        reshapedIndices = [ctx.graph broadcastTensor:reshapedIndices
+                                             toShape:broadcastShape
+                                                name:nil];
 
         MPSGraphTensor* result =
             SafeGatherAlongAxis(ctx.graph, (NSInteger)gatherAxis, operand, reshapedIndices);
@@ -705,105 +723,69 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
         return Result(ctx, gathered, "gather");
     }
 
-    // Handle single-index slice pattern (e.g., x[:, :-1, None] or x[start:]):
-    // Pattern: a single index into one dimension, all other dims pass through as offset.
-    // Example: operand [4,16], indices [1] (scalar 0), start_index_map=[1], slice_sizes=[4,15]
-    //   offset_dims=[0,1], collapsed=[], index_vector_dim=0
-    // This is essentially a dynamic_slice operation.
+    // Handle dynamic_slice-like gather pattern:
+    // Pattern: indices are a coordinate vector (index_vector_dim=0), all dims are offset,
+    // no collapsed dims. This is a multi-dimensional dynamic slice.
+    // Single-index example: operand [4,16], indices [1], start_index_map=[1], slice_sizes=[4,15]
+    // Multi-index example: operand [2,3,3], indices [2], start_index_map=[1,2], slice_sizes=[2,1,1]
     if (operandBatchingDims.empty() && startIndicesBatchingDims.empty() &&
-        startIndexMap.size() == 1 && collapsedSliceDims.empty() && indexVectorDim == 0 &&
-        indicesRank == 1 && [indicesShape[0] integerValue] == 1) {
-        int64_t sliceAxis = startIndexMap[0];
+        collapsedSliceDims.empty() && indexVectorDim == 0 &&
+        indicesRank == 1 && startIndexMap.size() >= 1 &&
+        (int64_t)[indicesShape[0] integerValue] == (int64_t)startIndexMap.size()) {
         auto sliceSizes = gatherOp.getSliceSizes();
-
-        // Build start indices for dynamic_slice: zeros except for the slice axis
-        NSMutableArray<NSNumber*>* startOffsets = [NSMutableArray array];
         auto operandType = mlir::cast<mlir::RankedTensorType>(ctx.op->getOperand(0).getType());
         NSUInteger operandRank = (NSUInteger)operandType.getShape().size();
-        for (NSUInteger d = 0; d < operandRank; ++d) {
-            [startOffsets addObject:@0];
-        }
 
-        // The start index is the scalar in the indices tensor
-        MPSGraphTensor* startIdx = EnsureInt32(ctx.graph, startIndices);
-        // Reshape from [1] to scalar
-        startIdx = [ctx.graph reshapeTensor:startIdx withShape:@[] name:nil];
+        // Apply dynamic slices sequentially along each indexed dimension
+        MPSGraphTensor* gathered = operand;
+        for (size_t i = 0; i < startIndexMap.size(); ++i) {
+            int64_t sliceAxis = startIndexMap[i];
+            int64_t sliceLen = sliceSizes[sliceAxis];
 
-        // Compute slice: use sliceTensor with starts/ends/strides
-        NSMutableArray<NSNumber*>* starts = [NSMutableArray array];
-        NSMutableArray<NSNumber*>* ends = [NSMutableArray array];
-        NSMutableArray<NSNumber*>* strides_arr = [NSMutableArray array];
-        bool allStatic = true;
+            // Extract the i-th index from the indices vector
+            MPSGraphTensor* startIdx = [ctx.graph sliceTensor:startIndices
+                                                         starts:@[@(i)]
+                                                           ends:@[@(i + 1)]
+                                                        strides:@[@1]
+                                                           name:nil];
+            startIdx = EnsureInt32(ctx.graph, startIdx);
+            startIdx = [ctx.graph reshapeTensor:startIdx withShape:@[] name:nil];
 
-        for (NSUInteger d = 0; d < operandRank; ++d) {
-            if ((int64_t)d == sliceAxis) {
-                // For the slice axis, check if we can determine the start statically
-                // The index tensor is a constant (e.g., 0)
-                // For now, handle the common case where index is constant 0
-                allStatic = false;  // dynamic start
+            // Create iota range [0, 1, ..., sliceLen-1] + startIdx
+            MPSGraphTensor* iota = [ctx.graph coordinateAlongAxis:0
+                                                        withShape:@[@(sliceLen)]
+                                                             name:nil];
+            iota = [ctx.graph castTensor:iota toType:MPSDataTypeInt32 name:nil];
+            MPSGraphTensor* offsetIota = [ctx.graph additionWithPrimaryTensor:iota
+                                                              secondaryTensor:startIdx
+                                                                         name:nil];
+
+            // Build broadcast shape for gatherAlongAxis
+            NSUInteger curRank = gathered.shape.count;
+            NSMutableArray<NSNumber*>* iotaShape = [NSMutableArray array];
+            NSMutableArray<NSNumber*>* broadcastShape = [NSMutableArray array];
+            for (NSUInteger d = 0; d < curRank; ++d) {
+                if ((int64_t)d == sliceAxis) {
+                    [iotaShape addObject:@(sliceLen)];
+                    [broadcastShape addObject:@(sliceLen)];
+                } else {
+                    [iotaShape addObject:@1];
+                    [broadcastShape addObject:gathered.shape[d]];
+                }
             }
-            [starts addObject:@0];
-            [ends addObject:@(sliceSizes[d])];
-            [strides_arr addObject:@1];
+            offsetIota = [ctx.graph reshapeTensor:offsetIota withShape:iotaShape name:nil];
+            offsetIota = [ctx.graph broadcastTensor:offsetIota toShape:broadcastShape name:nil];
+
+            gathered = SafeGatherAlongAxis(ctx.graph, (NSInteger)sliceAxis, gathered, offsetIota);
         }
-
-        // Since the index might be dynamic, use stablehlo.dynamic_slice semantics:
-        // For the common case where the index is compile-time 0, just use static slice
-        // Check if indices is a constant
-        bool indexIsZero = false;
-        if (auto constOp = startIndices.operation) {
-            // MPS graph tensors from constants - check via shape
-            // Actually, we can just use the slice API since MPS graph handles it
-        }
-
-        // Use gatherAlongAxis for dynamic indexing
-        // Create indices for iota range: [0, 1, 2, ..., sliceSizes[sliceAxis]-1]
-        // Then add the start index offset
-        int64_t sliceLen = sliceSizes[sliceAxis];
-        NSMutableArray<NSNumber*>* iotaShape = [NSMutableArray array];
-        [iotaShape addObject:@(sliceLen)];
-        MPSGraphTensor* iota = [ctx.graph coordinateAlongAxis:0
-                                              withShape:iotaShape
-                                                   name:nil];
-        iota = [ctx.graph castTensor:iota toType:MPSDataTypeInt32 name:@"iota_i32"];
-
-        // Add start offset
-        MPSGraphTensor* offsetIota = [ctx.graph additionWithPrimaryTensor:iota
-                                                          secondaryTensor:startIdx
-                                                                     name:nil];
-
-        // gatherAlongAxis requires indices rank == operand rank.
-        // Build indices shape: operand shape but with sliceLen on the slice axis.
-        NSMutableArray<NSNumber*>* gatherShape = [NSMutableArray array];
-        for (NSUInteger d = 0; d < operandRank; ++d) {
-            if ((int64_t)d == sliceAxis) {
-                [gatherShape addObject:@(sliceLen)];
-            } else {
-                [gatherShape addObject:operand.shape[d]];
-            }
-        }
-        // Reshape iota to have size-1 dims for non-slice axes, then broadcast
-        NSMutableArray<NSNumber*>* iotaBroadcastShape = [NSMutableArray array];
-        for (NSUInteger d = 0; d < operandRank; ++d) {
-            if ((int64_t)d == sliceAxis) {
-                [iotaBroadcastShape addObject:@(sliceLen)];
-            } else {
-                [iotaBroadcastShape addObject:@1];
-            }
-        }
-        offsetIota = [ctx.graph reshapeTensor:offsetIota withShape:iotaBroadcastShape name:nil];
-        offsetIota = [ctx.graph broadcastTensor:offsetIota toShape:gatherShape name:nil];
-
-        // Gather along the slice axis
-        MPSGraphTensor* gathered = SafeGatherAlongAxis(
-            ctx.graph, (NSInteger)sliceAxis, operand, offsetIota);
 
         // Reshape to expected output
         NSArray<NSNumber*>* outputShape = GetOutputShape(ctx.op);
         gathered = [ctx.graph reshapeTensor:gathered withShape:outputShape name:nil];
-
         return Result(ctx, gathered, "gather");
     }
+
+
 
     // Handle slice-gather pattern (e.g., embedding lookup via vmap):
     // Like multi-index gather but some mapped dims have full-size slices (not collapsed).
@@ -1240,16 +1222,57 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
             // is the index coordinate, which has size 1 for single-dim scatter).
         }
 
-        // scatterAlongAxis requires all tensors to have the same rank.
-        // When squeezing produced fewer dims than input (e.g. vmap pattern:
-        // input [3,5], indices squeezed from [3,1] to [3]), expand back.
+        // scatterAlongAxis requires indices and updates to have matching shapes.
+        // Build the shapes by analyzing which dims in the squeezed indices are
+        // batch vs scatter.
         NSUInteger inputRank = input.shape.count;
-        if (scatterIdx.shape.count < inputRank) {
-            NSMutableArray<NSNumber*>* expandedShape =
-                [NSMutableArray arrayWithArray:scatterIdx.shape];
-            [expandedShape insertObject:@1 atIndex:static_cast<NSUInteger>(scatterAxis)];
-            scatterIdx = [ctx.graph reshapeTensor:scatterIdx withShape:expandedShape name:nil];
+
+        // After squeezing the index_vector_dim, identify which dims of scatterIdx
+        // correspond to batch dims vs scatter dims.
+        // scatterIdx shape is indices shape with ivd removed.
+        // scatterIndicesBatchingDims refers to the original indices tensor dims.
+        llvm::SmallDenseSet<int64_t, 4> idxBatchDimSet;
+        for (auto bd : scatterIndicesBatchingDims) {
+            // Adjust for squeeze: if bd > indexVectorDim, subtract 1
+            int64_t adjustedBd = bd;
+            if (bd > indexVectorDim) adjustedBd--;
+            idxBatchDimSet.insert(adjustedBd);
         }
+
+        // Compute scatter count N from non-batch dims of squeezed indices
+        int64_t scatterN = 1;
+        for (NSUInteger i = 0; i < scatterIdx.shape.count; ++i) {
+            if (!idxBatchDimSet.count(i)) {
+                scatterN *= [scatterIdx.shape[i] integerValue];
+            }
+        }
+
+        // For scatterAlongAxis, indices must match input in all dims except scatter axis.
+        // Reshape squeezed indices [scatter..., batch...] -> [input_shape] with
+        // scatter axis = N, batch dims = input batch sizes, other dims = 1 for broadcast.
+        NSMutableArray<NSNumber*>* idxExpandShape = [NSMutableArray array];
+        NSMutableArray<NSNumber*>* targetShape = [NSMutableArray array];
+        for (NSUInteger d = 0; d < inputRank; d++) {
+            bool isBatchDim = false;
+            for (auto bd : inputBatchingDims) {
+                if ((NSUInteger)bd == d) { isBatchDim = true; break; }
+            }
+            if (isBatchDim) {
+                [idxExpandShape addObject:input.shape[d]];
+                [targetShape addObject:input.shape[d]];
+            } else if ((int64_t)d == scatterAxis) {
+                [idxExpandShape addObject:@(scatterN)];
+                [targetShape addObject:@(scatterN)];
+            } else {
+                [idxExpandShape addObject:@1];
+                [targetShape addObject:input.shape[d]];
+            }
+        }
+        scatterIdx = [ctx.graph reshapeTensor:scatterIdx withShape:idxExpandShape name:nil];
+        scatterIdx = [ctx.graph broadcastTensor:scatterIdx toShape:targetShape name:nil];
+        scatterIdx = EnsureInt32(ctx.graph, scatterIdx);
+
+        // Reshape updates to target shape
         if (scatterUpdates.shape.count < inputRank) {
             NSMutableArray<NSNumber*>* expandedShape =
                 [NSMutableArray arrayWithArray:scatterUpdates.shape];
@@ -1257,8 +1280,7 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
             scatterUpdates =
                 [ctx.graph reshapeTensor:scatterUpdates withShape:expandedShape name:nil];
         }
-
-        scatterIdx = EnsureInt32(ctx.graph, scatterIdx);
+        scatterUpdates = [ctx.graph broadcastTensor:scatterUpdates toShape:targetShape name:nil];
 
         MPSGraphScatterMode mode = GetScatterMode(scatterOp);
 
