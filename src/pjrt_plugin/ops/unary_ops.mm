@@ -390,14 +390,18 @@ static ProcessResult HandleReducePrecision(HandlerContext& ctx) {
         MPSGraphTensor* maxMag = [g constantWithScalar:max_magnitude dataType:MPSDataTypeInt32];
         MPSGraphTensor* minMag = [g constantWithScalar:min_magnitude dataType:MPSDataTypeInt32];
 
-        // Overflow: magnitude > max → set to inf (0x7F800000)
+        // Detect NaN: magnitude > inf magnitude (0x7F800000) — must preserve NaN
         MPSGraphTensor* inf = [g constantWithScalar:0x7F800000 dataType:MPSDataTypeInt32];
+        MPSGraphTensor* isNaN = [g greaterThanWithPrimaryTensor:magnitude
+                                                secondaryTensor:inf
+                                                           name:nil];
+
+        // Overflow: magnitude > max → set to inf (NaN excluded below)
         MPSGraphTensor* isOverflow = [g greaterThanWithPrimaryTensor:magnitude
                                                      secondaryTensor:maxMag
                                                                 name:nil];
 
         // Underflow: 0 < magnitude < min → set to 0
-        // (NaN has exponent 0xFF which is > max, handled by overflow above)
         MPSGraphTensor* zero = [g constantWithScalar:0 dataType:MPSDataTypeInt32];
         MPSGraphTensor* isNonZeroUnderflow = [g logicalANDWithPrimaryTensor:
                                                 [g greaterThanWithPrimaryTensor:magnitude
@@ -420,6 +424,12 @@ static ProcessResult HandleReducePrecision(HandlerContext& ctx) {
                                              name:nil];
 
         // Recombine sign and magnitude
+        magnitude = [g selectWithPredicateTensor:isNaN
+                              truePredicateTensor:[g bitwiseANDWithPrimaryTensor:bits
+                                                                 secondaryTensor:magMask
+                                                                            name:nil]
+                             falsePredicateTensor:magnitude
+                                             name:nil];
         bits = [g bitwiseORWithPrimaryTensor:signBit secondaryTensor:magnitude name:nil];
     }
 

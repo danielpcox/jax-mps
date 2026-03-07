@@ -250,14 +250,16 @@ def make_unary_op_configs():
     yield from [
         OperationTestConfig(
             _reduce_precision(8, 7),
-            numpy.asarray([1.0, 0.1, 3.14159, -2.5, 0.0, 1e-10, 1e10],
+            numpy.asarray([1.0, 0.1, 3.14159, -2.5, 0.0, 1e-10, 1e10,
+                           float('nan'), float('inf'), float('-inf')],
                           dtype=numpy.float32),
             differentiable_argnums=(),
             name="reduce_precision-bf16",
         ),
         OperationTestConfig(
             _reduce_precision(5, 10),
-            numpy.asarray([1.0, 0.1, 3.14159, -2.5, 0.0, 1e-10, 1e10],
+            numpy.asarray([1.0, 0.1, 3.14159, -2.5, 0.0, 1e-10, 1e10,
+                           float('nan'), float('inf'), float('-inf')],
                           dtype=numpy.float32),
             differentiable_argnums=(),
             name="reduce_precision-f16",
@@ -278,7 +280,8 @@ def make_unary_op_configs():
         ),
         OperationTestConfig(
             _reduce_precision(2, 1),
-            numpy.asarray([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, -1.0, -4.0],
+            numpy.asarray([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, -1.0, -4.0,
+                           float('nan'), float('inf'), float('-inf')],
                           dtype=numpy.float32),
             differentiable_argnums=(),
             name="reduce_precision-extreme",
