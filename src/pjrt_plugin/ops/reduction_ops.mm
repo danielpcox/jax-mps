@@ -323,13 +323,16 @@ static ProcessResult HandleCumulativeReduceWindow(HandlerContext& ctx,
 static ProcessResult HandlePoolingReduceWindow(HandlerContext& ctx,
                                                mlir::stablehlo::ReduceWindowOp rwOp,
                                                MPSGraphTensor* input,
-                                               llvm::ArrayRef<int64_t> inputShape, int64_t rank) {
-    auto windowDims = rwOp.getWindowDimensions();
+                                               llvm::ArrayRef<int64_t> inputShapeRef, int64_t rank) {
+    // Copy to vector so we can reassign for rank > 4 batch merging.
+    std::vector<int64_t> inputShape(inputShapeRef.begin(), inputShapeRef.end());
+    auto windowDimsRef = rwOp.getWindowDimensions();
     auto stridesOpt = rwOp.getWindowStrides();
     auto winDilOpt = rwOp.getWindowDilations();
     auto paddingAttr = rwOp.getPaddingAttr();
 
-    // Collect per-axis attributes.
+    // Collect per-axis attributes into owned vectors (needed for rank > 4 merging).
+    std::vector<int64_t> windowDims(windowDimsRef.begin(), windowDimsRef.end());
     std::vector<int64_t> strides(rank, 1);
     std::vector<int64_t> winDil(rank, 1);
     std::vector<int64_t> padLow(rank, 0);
@@ -380,9 +383,69 @@ static ProcessResult HandlePoolingReduceWindow(HandlerContext& ctx,
                                     reductionType);
 
     // MPS provides maxPooling4D / avgPooling4D which require exactly 4D input.
-    // For rank <= 4: prepend size-1 dims. Rank > 4 not yet supported.
-    if (rank > 4)
-        return ProcessResult::Error("reduce_window: rank > 4 pooling not yet supported");
+    // For rank > 4 (e.g., from vmap): merge leading batch dims (window=1, stride=1)
+    // into a single batch dim, pool in 4D, then reshape back.
+    int64_t mergedBatchSize = 1;
+    int64_t mergedBatchDims = 0;
+    if (rank > 4) {
+        // Find how many leading dims can be merged (window=1, stride=1, no padding)
+        for (int64_t i = 0; i < rank - 3; i++) {
+            if (windowDims[i] == 1 && strides[i] == 1 && winDil[i] == 1 &&
+                padLow[i] == 0 && padHigh[i] == 0) {
+                mergedBatchSize *= inputShape[i];
+                mergedBatchDims++;
+            } else {
+                break;  // Can only merge contiguous leading dims
+            }
+        }
+        if (rank - mergedBatchDims > 4) {
+            return ProcessResult::Error("reduce_window: cannot reduce to 4D pooling (too many spatial dims)");
+        }
+        if (mergedBatchDims == 0) {
+            return ProcessResult::Error("reduce_window: rank > 4 pooling requires leading batch dims");
+        }
+
+        // Rebuild arrays with merged batch dims
+        int64_t newRank = rank - mergedBatchDims + 1;  // merged batch as 1 dim
+        std::vector<int64_t> newInputShape(newRank);
+        std::vector<int64_t> newWindowDims(newRank);
+        std::vector<int64_t> newStrides(newRank);
+        std::vector<int64_t> newWinDil(newRank);
+        std::vector<int64_t> newPadLow(newRank);
+        std::vector<int64_t> newPadHigh(newRank);
+
+        newInputShape[0] = mergedBatchSize;
+        newWindowDims[0] = 1;
+        newStrides[0] = 1;
+        newWinDil[0] = 1;
+        newPadLow[0] = 0;
+        newPadHigh[0] = 0;
+
+        for (int64_t i = mergedBatchDims; i < rank; i++) {
+            int64_t j = i - mergedBatchDims + 1;
+            newInputShape[j] = inputShape[i];
+            newWindowDims[j] = windowDims[i];
+            newStrides[j] = strides[i];
+            newWinDil[j] = winDil[i];
+            newPadLow[j] = padLow[i];
+            newPadHigh[j] = padHigh[i];
+        }
+
+        inputShape = newInputShape;
+        windowDims = newWindowDims;
+        strides = newStrides;
+        winDil = newWinDil;
+        padLow = newPadLow;
+        padHigh = newPadHigh;
+        rank = newRank;
+
+        // Reshape input tensor to merged shape
+        NSMutableArray<NSNumber*>* mergedShape = [NSMutableArray array];
+        for (int64_t i = 0; i < rank; i++) {
+            [mergedShape addObject:@(inputShape[i])];
+        }
+        input = [ctx.graph reshapeTensor:input withShape:mergedShape name:nil];
+    }
 
     // Build 4D arrays for the MPS pooling descriptor.
     int64_t pad4 = 4 - rank;
@@ -617,9 +680,6 @@ static ProcessResult HandleSelectAndScatter(HandlerContext& ctx) {
     auto operandShape = operandType.getShape();
     int64_t rank = static_cast<int64_t>(operandShape.size());
 
-    if (rank > 4)
-        return ProcessResult::Error("select_and_scatter: rank > 4 not yet supported");
-
     auto windowDimsOpt = sasOp.getWindowDimensions();
     auto stridesOpt = sasOp.getWindowStrides();
     auto paddingOpt = sasOp.getPadding();
@@ -647,6 +707,75 @@ static ProcessResult HandleSelectAndScatter(HandlerContext& ctx) {
         }
     }
 
+    // For rank > 4: merge leading batch dims (window=1, stride=1, no padding)
+    auto sourceType = mlir::dyn_cast<mlir::RankedTensorType>(sasOp.getSource().getType());
+    auto sourceShape = sourceType.getShape();
+    std::vector<int64_t> inputShapeVec(operandShape.begin(), operandShape.end());
+    std::vector<int64_t> srcShapeVec(sourceShape.begin(), sourceShape.end());
+    int64_t mergedBatchDims = 0;
+    int64_t mergedBatchSize = 1;
+    int64_t mergedSourceBatchSize = 1;
+
+    if (rank > 4) {
+        for (int64_t i = 0; i < rank - 3; i++) {
+            if (windowDims[i] == 1 && strides[i] == 1 &&
+                padLow[i] == 0 && padHigh[i] == 0) {
+                mergedBatchSize *= operandShape[i];
+                mergedSourceBatchSize *= sourceShape[i];
+                mergedBatchDims++;
+            } else {
+                break;
+            }
+        }
+        if (rank - mergedBatchDims > 4)
+            return ProcessResult::Error("select_and_scatter: cannot reduce to 4D (too many spatial dims)");
+        if (mergedBatchDims == 0)
+            return ProcessResult::Error("select_and_scatter: rank > 4 requires leading batch dims");
+
+        int64_t newRank = rank - mergedBatchDims + 1;
+        std::vector<int64_t> newInputShape(newRank);
+        std::vector<int64_t> newSrcShape(newRank);
+        std::vector<int64_t> newWindowDims(newRank);
+        std::vector<int64_t> newStrides(newRank);
+        std::vector<int64_t> newPadLow(newRank);
+        std::vector<int64_t> newPadHigh(newRank);
+
+        newInputShape[0] = mergedBatchSize;
+        newSrcShape[0] = mergedSourceBatchSize;
+        newWindowDims[0] = 1;
+        newStrides[0] = 1;
+        newPadLow[0] = 0;
+        newPadHigh[0] = 0;
+
+        for (int64_t i = mergedBatchDims; i < rank; i++) {
+            int64_t j = i - mergedBatchDims + 1;
+            newInputShape[j] = operandShape[i];
+            newSrcShape[j] = sourceShape[i];
+            newWindowDims[j] = windowDims[i];
+            newStrides[j] = strides[i];
+            newPadLow[j] = padLow[i];
+            newPadHigh[j] = padHigh[i];
+        }
+
+        inputShapeVec = newInputShape;
+        srcShapeVec = newSrcShape;
+        windowDims = newWindowDims;
+        strides = newStrides;
+        padLow = newPadLow;
+        padHigh = newPadHigh;
+        rank = newRank;
+
+        // Reshape operand and source to merged shape
+        NSMutableArray<NSNumber*>* mergedOpShape = [NSMutableArray array];
+        NSMutableArray<NSNumber*>* mergedSrcShape = [NSMutableArray array];
+        for (int64_t i = 0; i < rank; i++) {
+            [mergedOpShape addObject:@(inputShapeVec[i])];
+            [mergedSrcShape addObject:@(srcShapeVec[i])];
+        }
+        operand = [ctx.graph reshapeTensor:operand withShape:mergedOpShape name:nil];
+        source = [ctx.graph reshapeTensor:source withShape:mergedSrcShape name:nil];
+    }
+
     // Build 4D arrays for MPS pooling descriptor (same as HandlePoolingReduceWindow)
     int64_t pad4 = 4 - rank;
     NSMutableArray<NSNumber*>* kernelSizes = [NSMutableArray arrayWithCapacity:4];
@@ -666,17 +795,14 @@ static ProcessResult HandleSelectAndScatter(HandlerContext& ctx) {
         [sourceReshape addObject:@1];
     }
 
-    auto sourceType = mlir::dyn_cast<mlir::RankedTensorType>(sasOp.getSource().getType());
-    auto sourceShape = sourceType.getShape();
-
     for (int64_t i = 0; i < rank; i++) {
         [kernelSizes addObject:@(windowDims[i])];
         [mpsStrides addObject:@(strides[i])];
         [dilationRates addObject:@1];
         [paddingValues addObject:@(padLow[i])];
         [paddingValues addObject:@(padHigh[i])];
-        [operandReshape addObject:@(operandShape[i])];
-        [sourceReshape addObject:@(sourceShape[i])];
+        [operandReshape addObject:@(inputShapeVec[i])];
+        [sourceReshape addObject:@(srcShapeVec[i])];
     }
 
     // Reshape to 4D

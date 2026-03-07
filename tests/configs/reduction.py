@@ -183,4 +183,42 @@ def make_reduction_op_configs():
                 lambda key: random.normal(key, (2, 8, 8, 3)),
                 name="avgpool2d-valid",
             ),
+            # Rank 5 max pool (vmap over batch, e.g. Equinox CNN pattern)
+            # Input: [batch, 1, H, W, C] with window [1, 1, 2, 2, 1]
+            OperationTestConfig(
+                lambda x: lax.reduce_window(
+                    x, -jnp.inf, lax.max, (1, 1, 2, 2, 1), (1, 1, 2, 2, 1), "valid"
+                ),
+                lambda key: random.normal(key, (4, 1, 8, 8, 3)),
+                name="maxpool2d-rank5-vmap",
+            ),
+            # Rank 5 sum pool
+            OperationTestConfig(
+                lambda x: lax.reduce_window(
+                    x, 0.0, lax.add, (1, 1, 2, 2, 1), (1, 1, 2, 2, 1), "valid"
+                ),
+                lambda key: random.normal(key, (4, 1, 8, 8, 3)),
+                name="sumpool2d-rank5-vmap",
+            ),
+            # Rank 5 min pool
+            OperationTestConfig(
+                lambda x: lax.reduce_window(
+                    x, jnp.inf, lax.min, (1, 1, 2, 2, 1), (1, 1, 2, 2, 1), "valid"
+                ),
+                lambda key: random.normal(key, (4, 1, 8, 8, 3)),
+                name="minpool2d-rank5-vmap",
+            ),
+            # Rank 5 max pool with SAME padding
+            OperationTestConfig(
+                lambda x: lax.reduce_window(
+                    x,
+                    -jnp.inf,
+                    lax.max,
+                    (1, 1, 3, 3, 1),
+                    (1, 1, 1, 1, 1),
+                    "same",
+                ),
+                lambda key: random.normal(key, (4, 1, 8, 8, 3)),
+                name="maxpool2d-rank5-same",
+            ),
         ]
