@@ -279,6 +279,34 @@ def make_linalg_op_configs():
             name="inv_complex_batched",
         )
 
+        # --- complex Cholesky (via Accelerate LAPACK cpotrf_) ---
+
+        for n in [2, 3, 4]:
+            yield OperationTestConfig(
+                jnp.linalg.cholesky,
+                lambda key, n=n: (
+                    lambda A: A @ A.conj().T + n * jnp.eye(n)
+                )(
+                    random.normal(key, (n, n))
+                    + 1j * random.normal(random.fold_in(key, 1), (n, n))
+                ),
+                differentiable_argnums=(),
+                name=f"cholesky_complex_{n}x{n}",
+            )
+
+        # Batched complex Cholesky
+        yield OperationTestConfig(
+            jnp.linalg.cholesky,
+            lambda key: (
+                lambda A: jnp.einsum("...ij,...kj->...ik", A, A.conj()) + 3 * jnp.eye(3)
+            )(
+                random.normal(key, (2, 3, 3))
+                + 1j * random.normal(random.fold_in(key, 1), (2, 3, 3))
+            ),
+            differentiable_argnums=(),
+            name="cholesky_complex_batched",
+        )
+
         # --- QR decomposition (via Accelerate LAPACK) ---
 
         # QR on tall matrices

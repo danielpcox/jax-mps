@@ -109,6 +109,56 @@ static NativeResult NativeHandle_cholesky(id<MTLDevice> device, id<MTLCommandBuf
         batchSize *= shape[i];
     }
 
+    // Complex Cholesky via Accelerate LAPACK cpotrf_
+    if (mlir::isa<mlir::ComplexType>(resultType.getElementType())) {
+        size_t elem_size = sizeof(float) * 2;  // complex<float>
+        size_t matrixDataSize = (size_t)(n * n) * elem_size;
+        size_t totalOutSize = (size_t)batchSize * matrixDataSize;
+
+        id<MTLBuffer> outBuf = [device newBufferWithLength:totalOutSize
+                                                   options:MTLResourceStorageModeShared];
+
+        // Copy input to output (LAPACK works in-place)
+        memcpy(outBuf.contents, inputs[0].contents, totalOutSize);
+
+        char uplo = lower ? 'L' : 'U';
+        int ln = (int)n;
+
+        for (int64_t b = 0; b < batchSize; b++) {
+            auto* data = (std::complex<float>*)outBuf.contents + b * n * n;
+
+            // Transpose to column-major for LAPACK
+            std::vector<std::complex<float>> colMajor(n * n);
+            for (int64_t i = 0; i < n; i++)
+                for (int64_t j = 0; j < n; j++)
+                    colMajor[j * n + i] = data[i * n + j];
+
+            int info = 0;
+            cpotrf_(&uplo, &ln, (__CLPK_complex*)colMajor.data(), &ln, &info);
+
+            if (info != 0) {
+                // Not positive definite — fill with NaN (matching CPU behavior)
+                for (int64_t i = 0; i < n * n; i++)
+                    data[i] = std::complex<float>(NAN, NAN);
+                continue;
+            }
+
+            // Transpose back to row-major
+            for (int64_t i = 0; i < n; i++)
+                for (int64_t j = 0; j < n; j++)
+                    data[i * n + j] = colMajor[j * n + i];
+
+            // Zero out the upper (or lower) triangle
+            for (int64_t i = 0; i < n; i++)
+                for (int64_t j = 0; j < n; j++) {
+                    if (lower && j > i) data[i * n + j] = {0, 0};
+                    if (!lower && j < i) data[i * n + j] = {0, 0};
+                }
+        }
+
+        return NativeResult::Buffer(outBuf);
+    }
+
     if (!resultType.getElementType().isF32()) {
         return NativeResult::Error("cholesky: only float32 is supported");
     }
