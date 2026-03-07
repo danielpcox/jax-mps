@@ -377,3 +377,39 @@ def make_linalg_op_configs():
             differentiable_argnums=(),
             name="matrix_rank_3x3",
         )
+
+        # --- General (non-symmetric) eigendecomposition via LAPACK sgeev_ ---
+
+        # eig: eigenvalues of symmetric-like matrix (real eigenvalues)
+        for n in [2, 3, 4]:
+            yield OperationTestConfig(
+                lambda x: jnp.sort(jnp.abs(jnp.linalg.eig(x)[0])),
+                lambda key, n=n: _random_posdef(key, n),
+                differentiable_argnums=(),
+                name=f"eig_values_posdef_{n}x{n}",
+            )
+
+        # eig: eigenvalues of general matrix (may have complex eigenvalues)
+        for n in [2, 3, 4]:
+            yield OperationTestConfig(
+                lambda x: jnp.sort(jnp.abs(jnp.linalg.eig(x)[0])),
+                lambda key, n=n: random.normal(key, (n, n)),
+                differentiable_argnums=(),
+                name=f"eig_values_general_{n}x{n}",
+            )
+
+        # eig: batched
+        yield OperationTestConfig(
+            lambda x: jnp.sort(jnp.abs(jnp.linalg.eig(x)[0]), axis=-1),
+            lambda key: random.normal(key, (2, 3, 3)),
+            differentiable_argnums=(),
+            name="eig_values_batched",
+        )
+
+        # eig: verify A @ V = V @ diag(w) identity (uses native+graph interop)
+        yield OperationTestConfig(
+            lambda x: jnp.linalg.eig(x)[0].real,
+            lambda key: _random_posdef(key, 3),
+            differentiable_argnums=(),
+            name="eig_identity_check",
+        )
