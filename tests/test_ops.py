@@ -207,6 +207,34 @@ def test_boolean_constant_in_jit() -> None:
     assert float(sum_captured_large()) == 140.0
 
 
+def test_dot_general_scalar_vector_gradient() -> None:
+    """Regression test: dot_general with scalar * vector operands must not expand
+    the vector to rank-2 when the other operand is rank-0 (scalar broadcast)."""
+    if TEST_MODE == "cpu":
+        pytest.skip("MPS-specific test skipped in CPU-only mode")
+    mps = jax.devices("mps")[0]
+    cpu = jax.devices("cpu")[0]
+
+    A = jnp.array([[1.0, 0.8], [0.8, 1.0]])
+    x = jnp.array([0.5, -0.5])
+
+    # grad of x^T A x w.r.t. x (generates scalar * vector dot_general in backward)
+    g_cpu = numpy.asarray(jax.jit(jax.grad(lambda x, A: jnp.dot(x, jnp.dot(A, x))),
+                                   device=cpu)(x, A))
+    g_mps = numpy.asarray(jax.jit(jax.grad(lambda x, A: jnp.dot(x, jnp.dot(A, x))),
+                                   device=mps)(jax.device_put(x, mps),
+                                               jax.device_put(A, mps)))
+    numpy.testing.assert_allclose(g_mps, g_cpu, atol=1e-5)
+
+    # grad of x^T A x w.r.t. A (generates outer product via scalar broadcast)
+    gA_cpu = numpy.asarray(jax.jit(jax.grad(lambda A, x: jnp.dot(x, jnp.dot(A, x)),
+                                             argnums=0), device=cpu)(A, x))
+    gA_mps = numpy.asarray(jax.jit(jax.grad(lambda A, x: jnp.dot(x, jnp.dot(A, x)),
+                                             argnums=0), device=mps)(
+                                    jax.device_put(A, mps), jax.device_put(x, mps)))
+    numpy.testing.assert_allclose(gA_mps, gA_cpu, atol=1e-5)
+
+
 @pytest.fixture(autouse=True, scope="module")
 def assert_all_ops_tested():
     yield
