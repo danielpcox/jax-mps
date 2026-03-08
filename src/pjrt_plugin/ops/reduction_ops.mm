@@ -363,14 +363,15 @@ static ProcessResult HandlePoolingReduceWindow(HandlerContext& ctx,
                 "reduce_window: negative padding not supported for pooling");
     }
 
-    // Must have at least one spatial dim (window > 1).
+    // If all windows are size 1, it's an identity — return input directly.
     bool hasSpatial = false;
     for (int64_t i = 0; i < rank; i++) {
         if (windowDims[i] > 1)
             hasSpatial = true;
     }
-    if (!hasSpatial)
-        return ProcessResult::Error("reduce_window: no spatial dimensions for pooling");
+    if (!hasSpatial) {
+        return Result(ctx, input, "reduce_window_identity");
+    }
 
     // Check reduction type — pooling supports max, min (via negate-max-negate),
     // and add (sum via avg*count).

@@ -275,6 +275,46 @@ def test_dot_general_3d_1d_matmul() -> None:
     numpy.testing.assert_allclose(g_mps, g_cpu, atol=1e-5)
 
 
+def test_dot_general_2d_outer_product() -> None:
+    """Regression test: dot_general with two 2D operands and no contracting/batch
+    dims (pure outer product) must produce the correct 4D result."""
+    if TEST_MODE == "cpu":
+        pytest.skip("MPS-specific test skipped in CPU-only mode")
+    mps = jax.devices("mps")[0]
+    cpu = jax.devices("cpu")[0]
+
+    a = jnp.array([[1.0, 2.0], [3.0, 4.0]])
+    b = jnp.array([[5.0, 6.0], [7.0, 8.0]])
+
+    # einsum 'ij,kl->ikjl' is a 2D outer product (no contraction, no batch)
+    cpu_result = numpy.asarray(jax.jit(
+        lambda a, b: jnp.einsum('ij,kl->ikjl', a, b), device=cpu)(a, b))
+    mps_result = numpy.asarray(jax.jit(
+        lambda a, b: jnp.einsum('ij,kl->ikjl', a, b), device=mps)(
+        jax.device_put(a, mps), jax.device_put(b, mps)))
+    numpy.testing.assert_allclose(mps_result, cpu_result, atol=1e-5)
+
+
+def test_reduce_window_identity() -> None:
+    """Regression test: reduce_window with all-ones window sizes (identity op)
+    must return the input unchanged rather than erroring."""
+    if TEST_MODE == "cpu":
+        pytest.skip("MPS-specific test skipped in CPU-only mode")
+    mps = jax.devices("mps")[0]
+    cpu = jax.devices("cpu")[0]
+
+    x = jnp.arange(16, dtype=jnp.float32).reshape(1, 4, 4, 1)
+
+    @jax.jit
+    def identity_pool(x):
+        return jax.lax.reduce_window(x, 0.0, jax.lax.add, (1, 1, 1, 1),
+                                     (1, 1, 1, 1), 'VALID')
+
+    cpu_result = numpy.asarray(identity_pool(jax.device_put(x, cpu)))
+    mps_result = numpy.asarray(identity_pool(jax.device_put(x, mps)))
+    numpy.testing.assert_allclose(mps_result, cpu_result, atol=1e-5)
+
+
 @pytest.fixture(autouse=True, scope="module")
 def assert_all_ops_tested():
     yield

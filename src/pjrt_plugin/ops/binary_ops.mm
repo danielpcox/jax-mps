@@ -307,6 +307,26 @@ static ProcessResult HandleDotGeneral(HandlerContext& ctx) {
         }  // end else (matmul-like validation)
     }
 
+    // Pure outer product: no contracting dims, no batch dims.
+    // Result shape is lhs_shape + rhs_shape. Implemented via broadcast multiply:
+    // reshape LHS to [...lhs_shape, 1, 1, ...] and RHS to [1, 1, ..., ...rhs_shape].
+    if (!result && lhsContractingDims.empty() && rhsContractingDims.empty() &&
+        lhsBatchDims.empty() && rhsBatchDims.empty()) {
+        // Build LHS shape: lhs_shape + (1,)*rhsRank
+        NSMutableArray<NSNumber*>* lhsBroadcastShape = [NSMutableArray array];
+        for (NSNumber* d in lhsShape) [lhsBroadcastShape addObject:d];
+        for (NSUInteger i = 0; i < rhsRank; ++i) [lhsBroadcastShape addObject:@1];
+
+        // Build RHS shape: (1,)*lhsRank + rhs_shape
+        NSMutableArray<NSNumber*>* rhsBroadcastShape = [NSMutableArray array];
+        for (NSUInteger i = 0; i < lhsRank; ++i) [rhsBroadcastShape addObject:@1];
+        for (NSNumber* d in rhsShape) [rhsBroadcastShape addObject:d];
+
+        MPSGraphTensor* lhsReshaped = [ctx.graph reshapeTensor:lhs withShape:lhsBroadcastShape name:nil];
+        MPSGraphTensor* rhsReshaped = [ctx.graph reshapeTensor:rhs withShape:rhsBroadcastShape name:nil];
+        result = [ctx.graph multiplicationWithPrimaryTensor:lhsReshaped secondaryTensor:rhsReshaped name:nil];
+    }
+
     // General fallback: handles any dot_general with arbitrary batch, contracting,
     // and free dims. Strategy: transpose to [batch, free, contract] × [batch, contract, free],
     // flatten each group, do 3D batched matmul [B,M,K]×[B,K,N], reshape to output.
