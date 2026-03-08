@@ -315,6 +315,67 @@ def test_reduce_window_identity() -> None:
     numpy.testing.assert_allclose(mps_result, cpu_result, atol=1e-5)
 
 
+def test_depthwise_conv_gradient() -> None:
+    """Regression test: gradient through depthwise convolution generates a convolution
+    with batch_group_count > 1 (for the kernel gradient). This must be converted to
+    an equivalent feature_group_count convolution."""
+    if TEST_MODE == "cpu":
+        pytest.skip("MPS-specific test skipped in CPU-only mode")
+    from jax import lax
+
+    mps = jax.devices("mps")[0]
+    cpu = jax.devices("cpu")[0]
+
+    key = jax.random.PRNGKey(55)
+    k1, k2 = jax.random.split(key)
+    channels = 4
+
+    x = jax.random.normal(k1, (2, 8, 8, channels), dtype=jnp.float32)
+    # Depthwise kernel: (kH, kW, 1, channels) with feature_group_count=channels
+    dw_kernel = jax.random.normal(k2, (3, 3, 1, channels), dtype=jnp.float32) * 0.1
+
+    def depthwise_conv_loss(x, kernel):
+        dn = lax.conv_dimension_numbers(x.shape, kernel.shape, ('NHWC', 'HWIO', 'NHWC'))
+        out = lax.conv_general_dilated(
+            x, kernel, window_strides=(1, 1), padding='SAME',
+            dimension_numbers=dn, feature_group_count=channels
+        )
+        return jnp.sum(out ** 2)
+
+    # Compare forward
+    cpu_fwd = numpy.asarray(jax.jit(depthwise_conv_loss, device=cpu)(x, dw_kernel))
+    mps_fwd = numpy.asarray(jax.jit(depthwise_conv_loss, device=mps)(
+        jax.device_put(x, mps), jax.device_put(dw_kernel, mps)))
+    numpy.testing.assert_allclose(mps_fwd, cpu_fwd, atol=1e-4)
+
+    # Compare gradients (kernel gradient uses batch_group_count internally)
+    grad_fn = jax.grad(depthwise_conv_loss, argnums=(0, 1))
+    g_cpu_x, g_cpu_k = jax.jit(grad_fn, device=cpu)(x, dw_kernel)
+    g_mps_x, g_mps_k = jax.jit(grad_fn, device=mps)(
+        jax.device_put(x, mps), jax.device_put(dw_kernel, mps))
+    numpy.testing.assert_allclose(numpy.asarray(g_mps_x), numpy.asarray(g_cpu_x), atol=1e-4)
+    numpy.testing.assert_allclose(numpy.asarray(g_mps_k), numpy.asarray(g_cpu_k), atol=1e-4)
+
+    # Also test with different group count (2 groups instead of fully depthwise)
+    k3 = jax.random.PRNGKey(99)
+    kernel_2g = jax.random.normal(k3, (3, 3, 2, channels), dtype=jnp.float32) * 0.1
+
+    def grouped_conv_loss(x, kernel):
+        dn = lax.conv_dimension_numbers(x.shape, kernel.shape, ('NHWC', 'HWIO', 'NHWC'))
+        out = lax.conv_general_dilated(
+            x, kernel, window_strides=(1, 1), padding='SAME',
+            dimension_numbers=dn, feature_group_count=2
+        )
+        return jnp.sum(out ** 2)
+
+    g2_cpu_x, g2_cpu_k = jax.jit(jax.grad(grouped_conv_loss, argnums=(0, 1)), device=cpu)(
+        x, kernel_2g)
+    g2_mps_x, g2_mps_k = jax.jit(jax.grad(grouped_conv_loss, argnums=(0, 1)), device=mps)(
+        jax.device_put(x, mps), jax.device_put(kernel_2g, mps))
+    numpy.testing.assert_allclose(numpy.asarray(g2_mps_x), numpy.asarray(g2_cpu_x), atol=1e-4)
+    numpy.testing.assert_allclose(numpy.asarray(g2_mps_k), numpy.asarray(g2_cpu_k), atol=1e-4)
+
+
 @pytest.fixture(autouse=True, scope="module")
 def assert_all_ops_tested():
     yield
