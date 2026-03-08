@@ -200,11 +200,9 @@ static ProcessResult HandleConvolution(HandlerContext& ctx) {
     int64_t outputFeatureDim = dimNumbers.getOutputFeatureDimension();
     auto outputSpatialDims = dimNumbers.getOutputSpatialDimensions();
 
-    // Determine spatial rank and check batch group count
+    // Determine spatial rank and batch group count
     size_t spatialRank = inputSpatialDims.size();
-    if (convOp.getBatchGroupCount() != 1) {
-        return ProcessResult::Error("convolution: batch_group_count != 1 not yet supported");
-    }
+    int64_t batchGroupCount = convOp.getBatchGroupCount();
 
     bool is1D = (spatialRank == 1);
     if (spatialRank > 2) {
@@ -259,6 +257,34 @@ static ProcessResult HandleConvolution(HandlerContext& ctx) {
     MPSGraphTensor* convInput = input;
     if (inputPerm) {
         convInput = [g transposeTensor:input permutation:inputPerm name:nil];
+    }
+
+    // Handle batch_group_count by converting to feature_group_count.
+    // batch_group_count appears in the backward pass of grouped convolutions (e.g., depthwise
+    // conv kernel gradient). We convert it by reshaping the input to move batch groups into the
+    // channel dimension, then using feature_group_count instead.
+    if (batchGroupCount > 1) {
+        // convInput is in NHWC: [N, H, W, C]
+        NSArray<NSNumber*>* inShape = convInput.shape;
+        int64_t N = [inShape[0] longLongValue];
+        int64_t H = [inShape[1] longLongValue];
+        int64_t W = [inShape[2] longLongValue];
+        int64_t C = [inShape[3] longLongValue];
+        int64_t G = batchGroupCount;
+
+        // Reshape [N, H, W, C] -> [G, N/G, H, W, C]
+        convInput = [g reshapeTensor:convInput
+                           withShape:@[@(G), @(N / G), @(H), @(W), @(C)]
+                                name:nil];
+        // Transpose [G, N/G, H, W, C] -> [N/G, H, W, G, C]
+        convInput = [g transposeTensor:convInput permutation:@[@1, @2, @3, @0, @4] name:nil];
+        // Reshape [N/G, H, W, G, C] -> [N/G, H, W, G*C]
+        convInput = [g reshapeTensor:convInput
+                           withShape:@[@(N / G), @(H), @(W), @(G * C)]
+                                name:nil];
+
+        // Use feature_group_count = G instead of batch_group_count
+        p.featureGroupCount = G;
     }
 
     // Perform convolution (or transposed convolution)
@@ -329,6 +355,9 @@ static ProcessResult HandleConvolution(HandlerContext& ctx) {
     }
 
     // Output is in NHWC format from MPS
+
+    // No output reshaping needed for batch_group_count: the feature_group_count conv
+    // already produces [N/G, H', W', C_out] which matches the expected output shape.
 
     if (is1D) {
         result =
