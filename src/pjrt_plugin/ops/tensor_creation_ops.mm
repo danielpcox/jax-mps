@@ -93,8 +93,25 @@ static ProcessResult HandleConstant(HandlerContext& ctx) {
         } else {
             // Non-splat dense constant - use raw data
             auto rawData = denseAttr.getRawData();
-            NSData* data = [NSData dataWithBytes:rawData.data() length:rawData.size()];
-            result = [ctx.graph constantWithData:data shape:shape dataType:dtype];
+            auto elemType = denseAttr.getElementType();
+
+            // MLIR stores i1 (bool) elements as bit-packed data (1 bit per element),
+            // but MPS expects MPSDataTypeBool with 1 byte per element.
+            // Unpack the bits into bytes.
+            if (auto intType = mlir::dyn_cast<mlir::IntegerType>(elemType);
+                intType && intType.getWidth() == 1) {
+                int64_t numElements = denseAttr.getNumElements();
+                std::vector<uint8_t> unpacked(numElements);
+                const uint8_t* packed = reinterpret_cast<const uint8_t*>(rawData.data());
+                for (int64_t i = 0; i < numElements; i++) {
+                    unpacked[i] = (packed[i / 8] >> (i % 8)) & 1;
+                }
+                NSData* data = [NSData dataWithBytes:unpacked.data() length:unpacked.size()];
+                result = [ctx.graph constantWithData:data shape:shape dataType:dtype];
+            } else {
+                NSData* data = [NSData dataWithBytes:rawData.data() length:rawData.size()];
+                result = [ctx.graph constantWithData:data shape:shape dataType:dtype];
+            }
         }
     }
 

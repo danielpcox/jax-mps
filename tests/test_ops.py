@@ -178,6 +178,35 @@ def test_unsupported_op_error_message(jit: bool) -> None:
             pytest.skip("clz is now supported; test needs a new unregistered op")
 
 
+def test_boolean_constant_in_jit() -> None:
+    """Regression test: boolean constants (JIT-captured bool arrays) must be unpacked
+    from MLIR's bit-packed i1 format to byte-per-element for MPS Graph."""
+    if TEST_MODE == "cpu":
+        pytest.skip("MPS-specific test skipped in CPU-only mode")
+    mps = jax.devices("mps")[0]
+
+    # Small boolean array
+    mask = jax.device_put(jnp.array([True, False, True, True, False, True]), mps)
+
+    @jax.jit
+    def sum_captured():
+        return jnp.sum(mask.astype(jnp.float32))
+
+    assert float(sum_captured()) == 4.0
+
+    # Larger boolean array (exercises multi-byte bit-packing)
+    rng = numpy.random.RandomState(42)
+    big_mask_np = numpy.zeros(2000, dtype=bool)
+    big_mask_np[rng.permutation(2000)[:140]] = True
+    big_mask = jax.device_put(jnp.array(big_mask_np), mps)
+
+    @jax.jit
+    def sum_captured_large():
+        return jnp.sum(big_mask.astype(jnp.float32))
+
+    assert float(sum_captured_large()) == 140.0
+
+
 @pytest.fixture(autouse=True, scope="module")
 def assert_all_ops_tested():
     yield
