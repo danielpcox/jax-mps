@@ -169,8 +169,12 @@ static ProcessResult HandleDynamicSlice(HandlerContext& ctx) {
         [outputShape addObject:@(s)];
     }
 
+    // Get input shape for clamping
+    NSArray<NSNumber*>* inputShape = input.shape;
+
     // Get start indices as tensors (operands 1 through N)
-    // and create coordinate tensors offset by the start indices
+    // Per StableHLO spec, start indices must be clamped:
+    //   start[i] = clamp(start[i], 0, dim_size[i] - slice_size[i])
     NSMutableArray<MPSGraphTensor*>* indexTensors = [NSMutableArray array];
     for (NSUInteger dim = 0; dim < rank; dim++) {
         // Get the start index tensor for this dimension (scalar tensor)
@@ -178,6 +182,21 @@ static ProcessResult HandleDynamicSlice(HandlerContext& ctx) {
         if (!startIdx) {
             return ProcessResult::Error("dynamic_slice: missing start index for dimension");
         }
+
+        // Clamp start index: max(0, min(start, dim_size - slice_size))
+        int64_t dimSize = inputShape[dim].longLongValue;
+        int64_t sliceSize = sliceSizes[dim];
+        int64_t maxStart = dimSize - sliceSize;
+        if (maxStart < 0) maxStart = 0;
+
+        MPSGraphTensor* zero = [ctx.graph constantWithScalar:0
+                                                    dataType:startIdx.dataType];
+        MPSGraphTensor* maxVal = [ctx.graph constantWithScalar:maxStart
+                                                      dataType:startIdx.dataType];
+        startIdx = [ctx.graph clampWithTensor:startIdx
+                                 minValueTensor:zero
+                                 maxValueTensor:maxVal
+                                           name:nil];
 
         // Create coordinate tensor for this dimension (0, 1, 2, ..., slice_size-1)
         MPSGraphTensor* coords = [ctx.graph coordinateAlongAxis:(NSInteger)dim
@@ -460,7 +479,12 @@ static ProcessResult HandleDynamicUpdateSlice(HandlerContext& ctx) {
     NSArray<NSNumber*>* updateShape = update.shape;
     NSUInteger rank = updateShape.count;
 
+    // Get operand shape for clamping
+    NSArray<NSNumber*>* operandShape = operand.shape;
+
     // Get start indices (operands 2 through N)
+    // Per StableHLO spec, start indices must be clamped:
+    //   start[i] = clamp(start[i], 0, dim_size[i] - update_size[i])
     NSMutableArray<MPSGraphTensor*>* startIndices = [NSMutableArray array];
     for (NSUInteger i = 0; i < rank; i++) {
         MPSGraphTensor* startIdx = GetInputTensor(ctx, i + 2);
@@ -470,14 +494,25 @@ static ProcessResult HandleDynamicUpdateSlice(HandlerContext& ctx) {
         [startIndices addObject:startIdx];
     }
 
-    // Build starts array by reading the scalar start indices
-    // For sliceUpdateDataTensor, we need static starts/ends/strides
-    // But the start indices are dynamic tensors, so we need to use scatter instead
-
     // Create coordinate tensors for the update region
     NSMutableArray<MPSGraphTensor*>* indexTensors = [NSMutableArray array];
     for (NSUInteger dim = 0; dim < rank; dim++) {
         MPSGraphTensor* startIdx = startIndices[dim];
+
+        // Clamp start index: max(0, min(start, dim_size - update_size))
+        int64_t dimSize = operandShape[dim].longLongValue;
+        int64_t updateSize = updateShape[dim].longLongValue;
+        int64_t maxStart = dimSize - updateSize;
+        if (maxStart < 0) maxStart = 0;
+
+        MPSGraphTensor* zero = [ctx.graph constantWithScalar:0
+                                                    dataType:startIdx.dataType];
+        MPSGraphTensor* maxVal = [ctx.graph constantWithScalar:maxStart
+                                                      dataType:startIdx.dataType];
+        startIdx = [ctx.graph clampWithTensor:startIdx
+                                 minValueTensor:zero
+                                 maxValueTensor:maxVal
+                                           name:nil];
 
         // Create coordinate tensor for this dimension (0, 1, 2, ..., update_size-1)
         MPSGraphTensor* coords = [ctx.graph coordinateAlongAxis:(NSInteger)dim

@@ -438,6 +438,50 @@ def test_outer_product_then_batched_dot() -> None:
     numpy.testing.assert_allclose(ga_mps, ga_cpu, atol=1e-3, rtol=1e-3)
 
 
+def test_dynamic_slice_clamps_oob_indices() -> None:
+    """Regression test: dynamic_slice must clamp out-of-bounds start indices.
+    Per StableHLO spec: start[i] = clamp(start[i], 0, dim_size[i] - slice_size[i])."""
+    if TEST_MODE == "cpu":
+        pytest.skip("MPS-specific test skipped in CPU-only mode")
+    from jax import lax
+
+    mps = jax.devices("mps")[0]
+    cpu = jax.devices("cpu")[0]
+
+    # 1D: start=8, size=3, dim=10 -> clamp to 7
+    x = jnp.arange(10, dtype=jnp.float32)
+    with jax.default_device(cpu):
+        cpu_r = lax.dynamic_slice(jax.device_put(x, cpu), (8,), (3,))
+    with jax.default_device(mps):
+        mps_r = lax.dynamic_slice(jax.device_put(x, mps), (8,), (3,))
+    numpy.testing.assert_allclose(numpy.asarray(mps_r), numpy.asarray(cpu_r), atol=1e-6)
+
+    # 2D: start=(3,3), size=(2,2), dims=(4,4) -> clamp to (2,2)
+    x2 = jnp.arange(16, dtype=jnp.float32).reshape(4, 4)
+    with jax.default_device(cpu):
+        cpu_r2 = lax.dynamic_slice(jax.device_put(x2, cpu), (3, 3), (2, 2))
+    with jax.default_device(mps):
+        mps_r2 = lax.dynamic_slice(jax.device_put(x2, mps), (3, 3), (2, 2))
+    numpy.testing.assert_allclose(numpy.asarray(mps_r2), numpy.asarray(cpu_r2), atol=1e-6)
+
+    # 3D: start=(6,6,6), size=(3,3,3), dims=(8,8,8) -> clamp to (5,5,5)
+    key = jax.random.PRNGKey(304)
+    x3 = jax.random.normal(key, (8, 8, 8), dtype=jnp.float32)
+    with jax.default_device(cpu):
+        cpu_r3 = lax.dynamic_slice(jax.device_put(x3, cpu), (6, 6, 6), (3, 3, 3))
+    with jax.default_device(mps):
+        mps_r3 = lax.dynamic_slice(jax.device_put(x3, mps), (6, 6, 6), (3, 3, 3))
+    numpy.testing.assert_allclose(numpy.asarray(mps_r3), numpy.asarray(cpu_r3), atol=1e-5)
+
+    # dynamic_update_slice with OOB start
+    update = jnp.array([99., 88., 77.])
+    with jax.default_device(cpu):
+        cpu_dus = lax.dynamic_update_slice(jax.device_put(x, cpu), jax.device_put(update, cpu), (9,))
+    with jax.default_device(mps):
+        mps_dus = lax.dynamic_update_slice(jax.device_put(x, mps), jax.device_put(update, mps), (9,))
+    numpy.testing.assert_allclose(numpy.asarray(mps_dus), numpy.asarray(cpu_dus), atol=1e-6)
+
+
 @pytest.fixture(autouse=True, scope="module")
 def assert_all_ops_tested():
     yield
