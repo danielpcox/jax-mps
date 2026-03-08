@@ -165,7 +165,11 @@ static ProcessResult HandleDotGeneral(HandlerContext& ctx) {
         lhsRank >= 1 && rhsRank >= 1 && lhsRank <= 2 && rhsRank <= 2 &&
         lhsContractingDims.size() <= 1 && rhsContractingDims.size() <= 1) {
         bool isOuterProduct = lhsContractingDims.empty() && rhsContractingDims.empty();
-        if (lhsRank == 1) {
+        // For outer products, only expand when both inputs are rank-1 (1D×1D).
+        // When one is rank-2 and the other rank-1, the general outer product path
+        // handles it correctly via broadcast multiply without expanding.
+        bool skipExpand = isOuterProduct && (lhsRank != 1 || rhsRank != 1);
+        if (!skipExpand && lhsRank == 1) {
             if (isOuterProduct) {
                 // Outer product: (M,) -> (M, 1)
                 lhs = [ctx.graph expandDimsOfTensor:lhs axis:1 name:nil];
@@ -177,7 +181,7 @@ static ProcessResult HandleDotGeneral(HandlerContext& ctx) {
             lhsRank = 2;
             lhsShape = lhs.shape;
         }
-        if (rhsRank == 1) {
+        if (!skipExpand && rhsRank == 1) {
             if (isOuterProduct) {
                 // Outer product: (N,) -> (1, N)
                 rhs = [ctx.graph expandDimsOfTensor:rhs axis:0 name:nil];

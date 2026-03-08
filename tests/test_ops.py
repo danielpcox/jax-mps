@@ -400,6 +400,44 @@ def test_vmap_dynamic_slice() -> None:
     numpy.testing.assert_allclose(mps_result, cpu_result, atol=1e-5)
 
 
+def test_outer_product_then_batched_dot() -> None:
+    """Regression test: 3-way outer product (i,j,k->ijk) via dot_general should not
+    corrupt subsequent dot_general operations with batch/contracting dims.
+    The rank-1 expansion for outer products must only apply to 1D×1D cases,
+    not 2D×1D which goes through the general outer product path."""
+    if TEST_MODE == "cpu":
+        pytest.skip("MPS-specific test skipped in CPU-only mode")
+
+    mps = jax.devices("mps")[0]
+    cpu = jax.devices("cpu")[0]
+
+    key = jax.random.PRNGKey(235)
+
+    # 3-way outer product via einsum
+    a = jax.random.normal(key, (8,), dtype=jnp.float32)
+    b = jax.random.normal(jax.random.PRNGKey(1), (6,), dtype=jnp.float32)
+    c = jax.random.normal(jax.random.PRNGKey(2), (4,), dtype=jnp.float32)
+
+    cpu_outer = numpy.asarray(jnp.einsum('i,j,k->ijk', *[jax.device_put(x, cpu) for x in [a, b, c]]))
+    mps_outer = numpy.asarray(jnp.einsum('i,j,k->ijk', *[jax.device_put(x, mps) for x in [a, b, c]]))
+    numpy.testing.assert_allclose(mps_outer, cpu_outer, atol=1e-5)
+
+    # Gradient through 3-tensor einsum (exercises dot_general with batch+contract dims)
+    A = jax.random.normal(key, (4, 5, 6), dtype=jnp.float32)
+    B = jax.random.normal(jax.random.PRNGKey(3), (5, 6, 7), dtype=jnp.float32)
+    C = jax.random.normal(jax.random.PRNGKey(4), (6, 7, 8), dtype=jnp.float32)
+
+    def loss(A, B, C):
+        return jnp.sum(jnp.einsum('ijk,jkl,klm->im', A, B, C) ** 2)
+
+    with jax.default_device(cpu):
+        ga_cpu = numpy.asarray(jax.grad(loss)(A, B, C))
+    with jax.default_device(mps):
+        ga_mps = numpy.asarray(jax.grad(loss)(
+            jax.device_put(A, mps), jax.device_put(B, mps), jax.device_put(C, mps)))
+    numpy.testing.assert_allclose(ga_mps, ga_cpu, atol=1e-3, rtol=1e-3)
+
+
 @pytest.fixture(autouse=True, scope="module")
 def assert_all_ops_tested():
     yield
