@@ -1163,6 +1163,23 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
                                                   name:nil];
             }
 
+            // MPS gatherAlongAxis requires updates and indices to have the same rank.
+            // When flatIndices has rank > 1 (from multi-dimensional index arrays),
+            // flatten it to 1D before gathering, then reshape back afterwards.
+            NSArray<NSNumber*>* origBatchShape = nil;
+            bool flattenedBatch = false;
+            if (!singlePoint && flatIndices.shape.count > 1) {
+                origBatchShape = [flatIndices.shape copy];
+                int64_t totalBatch = 1;
+                for (NSUInteger d = 0; d < flatIndices.shape.count; ++d) {
+                    totalBatch *= [flatIndices.shape[d] integerValue];
+                }
+                flatIndices = [ctx.graph reshapeTensor:flatIndices
+                                             withShape:@[@(totalBatch)]
+                                                  name:nil];
+                flattenedBatch = true;
+            }
+
             // Reshape flatIndices for broadcasting: add size-1 dims for offset dims
             // then broadcast to match operand shape in all non-gather dimensions
             NSMutableArray<NSNumber*>* gatherIndicesShape = [NSMutableArray array];
@@ -1191,6 +1208,20 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
             MPSGraphTensor* gathered = SafeGatherAlongAxis(ctx.graph, (NSInteger)gatherAxis,
                                                            flatOperand, reshapedIndices);
 
+            // If we flattened multi-dimensional batch indices, restore the batch dims.
+            // gathered shape is [totalBatch, offset_dims...], reshape to
+            // [batch_dim0, batch_dim1, ..., offset_dims...]
+            if (flattenedBatch) {
+                NSMutableArray<NSNumber*>* unflattenedShape = [NSMutableArray array];
+                for (NSUInteger d = 0; d < origBatchShape.count; ++d) {
+                    [unflattenedShape addObject:origBatchShape[d]];
+                }
+                for (NSUInteger d = 1; d < gathered.shape.count; ++d) {
+                    [unflattenedShape addObject:gathered.shape[d]];
+                }
+                gathered = [ctx.graph reshapeTensor:gathered withShape:unflattenedShape name:nil];
+            }
+
             // If we added a batch dim for single-point gather, squeeze it now.
             if (singlePoint) {
                 NSMutableArray<NSNumber*>* squeezed = [NSMutableArray array];
@@ -1207,9 +1238,10 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
             // determine which after-gather dimension goes there.
             NSArray<NSNumber*>* outputShape = GetOutputShape(ctx.op);
             NSUInteger outputRank = outputShape.count;
-            // After squeezing single-point batch dim, numIndexDims reflects
-            // the actual index dims remaining in the gathered result.
-            NSUInteger numIndexDims = singlePoint ? 0 : flatIndices.shape.count;
+            // After squeezing single-point batch dim or unflattening,
+            // numIndexDims reflects the actual index dims remaining in the gathered result.
+            NSUInteger numIndexDims = singlePoint ? 0 :
+                (flattenedBatch ? origBatchShape.count : flatIndices.shape.count);
             NSUInteger numOffsetDims = offsetDims.size();
 
             // Map output positions: offset dims go to specified positions,

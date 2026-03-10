@@ -514,4 +514,16 @@ def make_slice_op_configs():
                 differentiable_argnums=(),
                 name="gather_noncontig_dims",
             ),
+            # Multi-dimensional index arrays producing higher-rank output:
+            # x[:, y_idx, x_idx] where y_idx and x_idx have shape (5, 3)
+            # Result shape (3, 5, 3) has higher rank than source (3, 10, 10)
+            OperationTestConfig(
+                lambda x: x[
+                    :,
+                    jnp.arange(5)[:, None] + jnp.arange(3)[None, :],
+                    jnp.arange(5)[:, None] + jnp.arange(3)[None, :],
+                ],
+                lambda key: random.normal(key, (3, 10, 10)),
+                name="gather_multidim_index_arrays",
+            ),
         ]
