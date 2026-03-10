@@ -312,6 +312,32 @@ static ProcessResult processOperations(HandlerContext& ctx, mlir::Block& block) 
                     }
                 }
 
+                // reduce with zero-sized input: return the init value directly.
+                // MPS Graph hangs when reducing zero-element tensors, but the
+                // correct result is simply the identity/init value (e.g., 0 for
+                // sum, 1 for product).  The init value is operand 1 for
+                // single-result reduce.
+                if (!handled) {
+                    if (auto reduceOp = mlir::dyn_cast<mlir::stablehlo::ReduceOp>(op)) {
+                        unsigned numInputs = reduceOp.getInputs().size();
+                        for (unsigned r = 0; r < op->getNumResults(); r++) {
+                            // Init values follow the input operands
+                            MPSGraphTensor* initVal =
+                                GetTensor(ctx.values, op->getOperand(numInputs + r));
+                            if (initVal) {
+                                NSArray<NSNumber*>* outShape = GetOutputShape(op, r);
+                                if (outShape) {
+                                    initVal = [ctx.graph broadcastTensor:initVal
+                                                                toShape:outShape
+                                                                   name:nil];
+                                }
+                            }
+                            ctx.values[op->getResult(r).getAsOpaquePointer()] = initVal;
+                        }
+                        handled = true;
+                    }
+                }
+
                 // For ops with zero-sized operands but non-zero results
                 // (including scatter), fall through to the normal handler if
                 // all operands have valid tensors.  The handlers already cope
@@ -950,6 +976,30 @@ bool MpsExecutable::BuildExecutionPlan() {
                                                 handled = true;
                                             }
                                         }
+                                    }
+                                }
+
+                                // reduce with zero-sized input: return init value
+                                if (!handled) {
+                                    if (auto reduceOp =
+                                            mlir::dyn_cast<mlir::stablehlo::ReduceOp>(op)) {
+                                        unsigned numInputs = reduceOp.getInputs().size();
+                                        for (unsigned r = 0; r < op->getNumResults(); r++) {
+                                            MPSGraphTensor* initVal =
+                                                GetTensor(values, op->getOperand(numInputs + r));
+                                            if (initVal) {
+                                                NSArray<NSNumber*>* outShape =
+                                                    GetOutputShape(op, r);
+                                                if (outShape) {
+                                                    initVal =
+                                                        [graph broadcastTensor:initVal
+                                                                      toShape:outShape
+                                                                         name:nil];
+                                                }
+                                            }
+                                            values[op->getResult(r).getAsOpaquePointer()] = initVal;
+                                        }
+                                        handled = true;
                                     }
                                 }
 

@@ -1,3 +1,4 @@
+import numpy as np
 from jax import lax, random
 from jax import numpy as jnp
 
@@ -220,5 +221,35 @@ def make_reduction_op_configs():
                 ),
                 lambda key: random.normal(key, (4, 1, 8, 8, 3)),
                 name="maxpool2d-rank5-same",
+            ),
+        ]
+
+    # Zero-sized tensor reductions (empty arrays).
+    # MPS Graph hangs on these unless handled specially.
+    with OperationTestConfig.module_name("reduction-zero-sized"):
+        yield from [
+            OperationTestConfig(
+                jnp.sum,
+                np.zeros((0,), dtype=np.float32),
+                differentiable_argnums=(),
+                name="sum-empty-1d",
+            ),
+            OperationTestConfig(
+                jnp.prod,
+                np.zeros((0,), dtype=np.float32),
+                differentiable_argnums=(),
+                name="prod-empty-1d",
+            ),
+            OperationTestConfig(
+                lambda x: jnp.sum(x, axis=1),
+                np.zeros((3, 0), dtype=np.float32),
+                differentiable_argnums=(),
+                name="sum-empty-axis1",
+            ),
+            OperationTestConfig(
+                lambda x: jnp.sum(x, axis=0),
+                np.zeros((0, 4), dtype=np.float32),
+                differentiable_argnums=(),
+                name="sum-empty-axis0",
             ),
         ]
