@@ -262,6 +262,24 @@ def make_binary_op_configs():
                 numpy.array([0, 1, 2, 3, 31], dtype=numpy.uint32),
                 differentiable_argnums=(),
             ),
+            # select (jnp.where) — same-shape inputs
+            OperationTestConfig(
+                lambda pred, x, y: jnp.where(pred, x, y),
+                lambda key: random.normal(key, (3, 4)) > 0,
+                lambda key: random.normal(key, (3, 4)),
+                lambda key: random.normal(key, (3, 4)),
+                differentiable_argnums=(1, 2),
+                name="where-same-shape",
+            ),
+            # select with broadcasting — the case that was crashing:
+            # pred and onFalse have fewer dims than onTrue
+            OperationTestConfig(
+                lambda x, idx: jnp.take_along_axis(x, idx, axis=-1),
+                lambda key: random.normal(key, (2, 3, 5)),
+                lambda key: random.randint(key, (2, 3, 1), 0, 5),
+                differentiable_argnums=(0,),
+                name="take_along_axis-3d",
+            ),
             OperationTestConfig(
                 lax.shift_left,
                 numpy.array([0x40000000, -0x40000000, 5], dtype=numpy.int32),

@@ -511,6 +511,16 @@ static ProcessResult HandleSelect(HandlerContext& ctx) {
     if (!pred || !onTrue || !onFalse)
         return ProcessResult::Error("select: missing input tensor");
 
+    // StableHLO select supports implicit broadcasting, but MPS
+    // selectWithPredicateTensor requires all inputs to have the same shape.
+    // Broadcast all inputs to the output shape.
+    NSArray<NSNumber*>* outputShape = GetOutputShape(ctx.op);
+    if (outputShape) {
+        pred = [ctx.graph broadcastTensor:pred toShape:outputShape name:nil];
+        onTrue = [ctx.graph broadcastTensor:onTrue toShape:outputShape name:nil];
+        onFalse = [ctx.graph broadcastTensor:onFalse toShape:outputShape name:nil];
+    }
+
     MPSGraphTensor* result = [ctx.graph selectWithPredicateTensor:pred
                                               truePredicateTensor:onTrue
                                              falsePredicateTensor:onFalse
