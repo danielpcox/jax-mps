@@ -489,4 +489,29 @@ def make_slice_op_configs():
                 differentiable_argnums=(),
                 name="unique_basic",
             ),
+            # Non-contiguous scatter: x.at[h, :, s].set(val) on 3D tensor
+            # Produces scatter with scatterDimsToOperandDims=(0, 2) (non-contiguous)
+            OperationTestConfig(
+                lambda x: x.at[1, :, 2].set(0.0),
+                lambda key: random.normal(key, (4, 6, 6)),
+                differentiable_argnums=(),
+                name="scatter_noncontig_dims",
+            ),
+            # Slice-scatter: x.at[i, :n].set(val) on 2D tensor
+            # Produces scatter with insertedWindowDims=(0,) and K=2
+            OperationTestConfig(
+                lambda x, val: x.at[0, :3].set(val),
+                lambda key: random.normal(key, (6, 6)),
+                lambda key: random.normal(key, (3,)),
+                differentiable_argnums=(),
+                name="slice_scatter_2d",
+            ),
+            # Non-contiguous gather: x[oob, :, i] on 3D tensor
+            # Out-of-bounds index triggers gather with non-contiguous indexed dims
+            OperationTestConfig(
+                lambda x: x[5, :, 1],
+                lambda key: random.normal(key, (4, 6, 6)),
+                differentiable_argnums=(),
+                name="gather_noncontig_dims",
+            ),
         ]
