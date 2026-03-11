@@ -186,12 +186,10 @@ static ProcessResult HandleDynamicSlice(HandlerContext& ctx) {
         // Clamp start index: max(0, min(start, dim_size - slice_size))
         int64_t dimSize = inputShape[dim].longLongValue;
         int64_t sliceSize = sliceSizes[dim];
-        int64_t maxStart = dimSize - sliceSize;
-        if (maxStart < 0)
-            maxStart = 0;
+        int64_t maxStart = std::max(dimSize - sliceSize, (int64_t)0);
 
         MPSGraphTensor* zero = [ctx.graph constantWithScalar:0 dataType:startIdx.dataType];
-        MPSGraphTensor* maxVal = [ctx.graph constantWithScalar:maxStart dataType:startIdx.dataType];
+        MPSGraphTensor* maxVal = [ctx.graph constantWithScalar:static_cast<double>(maxStart) dataType:startIdx.dataType];
         startIdx = [ctx.graph clampWithTensor:startIdx
                                minValueTensor:zero
                                maxValueTensor:maxVal
@@ -499,12 +497,10 @@ static ProcessResult HandleDynamicUpdateSlice(HandlerContext& ctx) {
         // Clamp start index: max(0, min(start, dim_size - update_size))
         int64_t dimSize = operandShape[dim].longLongValue;
         int64_t updateSize = updateShape[dim].longLongValue;
-        int64_t maxStart = dimSize - updateSize;
-        if (maxStart < 0)
-            maxStart = 0;
+        int64_t maxStart = std::max(dimSize - updateSize, (int64_t)0);
 
         MPSGraphTensor* zero = [ctx.graph constantWithScalar:0 dataType:startIdx.dataType];
-        MPSGraphTensor* maxVal = [ctx.graph constantWithScalar:maxStart dataType:startIdx.dataType];
+        MPSGraphTensor* maxVal = [ctx.graph constantWithScalar:static_cast<double>(maxStart) dataType:startIdx.dataType];
         startIdx = [ctx.graph clampWithTensor:startIdx
                                minValueTensor:zero
                                maxValueTensor:maxVal
@@ -808,12 +804,9 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
     // Multi-index example: operand [2,3,3], indices [2], start_index_map=[1,2], slice_sizes=[2,1,1]
     if (operandBatchingDims.empty() && startIndicesBatchingDims.empty() &&
         collapsedSliceDims.empty() && indexVectorDim == 0 && indicesRank == 1 &&
-        startIndexMap.size() >= 1 &&
+        !startIndexMap.empty() &&
         (int64_t)[indicesShape[0] integerValue] == (int64_t)startIndexMap.size()) {
         auto sliceSizes = gatherOp.getSliceSizes();
-        auto operandType = mlir::cast<mlir::RankedTensorType>(ctx.op->getOperand(0).getType());
-        NSUInteger operandRank = (NSUInteger)operandType.getShape().size();
-
         // Apply dynamic slices sequentially along each indexed dimension
         MPSGraphTensor* gathered = operand;
         for (size_t i = 0; i < startIndexMap.size(); ++i) {

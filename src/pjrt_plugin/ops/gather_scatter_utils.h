@@ -145,7 +145,7 @@ inline MPSGraphTensor* ClampGatherIndices(MPSGraph* graph, MPSGraphTensor* indic
     int64_t rawMax = [dimSize longLongValue] - 1;
     int64_t maxIdx = rawMax > 0 ? rawMax : 0;
     MPSGraphTensor* zero = [graph constantWithScalar:0 dataType:indicesTensor.dataType];
-    MPSGraphTensor* maxVal = [graph constantWithScalar:0.0 + maxIdx
+    MPSGraphTensor* maxVal = [graph constantWithScalar:static_cast<double>(maxIdx)
                                               dataType:indicesTensor.dataType];
     return [graph clampWithTensor:indicesTensor minValueTensor:zero maxValueTensor:maxVal name:nil];
 }

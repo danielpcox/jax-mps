@@ -400,9 +400,16 @@ static NativeResult NativeHandle_triangular_solve(id<MTLDevice> device, id<MTLCo
         // ctrsm_ parameters (Fortran column-major conventions)
         char side = leftSide ? 'L' : 'R';
         char uplo = lower ? 'L' : 'U';
-        char transa = adjoint ? 'C' : (transpose ? 'T' : 'N');
+        char transa;
+        if (adjoint) {
+            transa = 'C';
+        } else if (transpose) {
+            transa = 'T';
+        } else {
+            transa = 'N';
+        }
         char diag = unitDiagonal ? 'U' : 'N';
-        std::complex<float> alpha(1.0f, 0.0f);
+        std::complex<float> alpha(1.0F, 0.0F);
 
         for (int64_t b = 0; b < batchSize; b++) {
             const auto* aSrc = aData + b * n * n;
@@ -990,7 +997,6 @@ static NativeResult NativeHandle_Sgesdd(id<MTLDevice> device, id<MTLCommandBuffe
     int64_t k = std::min(m, n);
 
     // Get output shapes from result types
-    auto sType = mlir::cast<mlir::RankedTensorType>(op->getResult(0).getType());
     auto uType = mlir::cast<mlir::RankedTensorType>(op->getResult(1).getType());
     auto vtType = mlir::cast<mlir::RankedTensorType>(op->getResult(2).getType());
     auto uShape = uType.getShape();
@@ -1070,10 +1076,10 @@ static NativeResult NativeHandle_Sgesdd(id<MTLDevice> device, id<MTLCommandBuffe
             int64_t mn_max = std::max(m, n);
             __CLPK_integer lrwork_val;
             if (jobz == 'N') {
-                lrwork_val = 7 * mn_min;
+                lrwork_val = static_cast<__CLPK_integer>(7 * mn_min);
             } else {
-                lrwork_val = std::max(5 * mn_min * mn_min + 5 * mn_min,
-                                      2 * mn_max * mn_min + 2 * mn_min * mn_min + mn_min);
+                lrwork_val = static_cast<__CLPK_integer>(std::max(5 * mn_min * mn_min + 5 * mn_min,
+                                      2 * mn_max * mn_min + 2 * mn_min * mn_min + mn_min));
             }
             std::vector<float> rwork(lrwork_val);
 
@@ -1282,7 +1288,8 @@ static NativeResult NativeHandle_Sgeev(id<MTLDevice> device, id<MTLCommandBuffer
             const float* inputMatrix = (const float*)inputs[0].contents + b * n * n;
 
             // Temporary real/imag eigenvalue arrays for LAPACK
-            std::vector<float> wr(n), wi(n);
+            std::vector<float> wr(n);
+            std::vector<float> wi(n);
 
             // Transpose to column-major for LAPACK
             std::vector<float> a(n * n);
@@ -1320,10 +1327,10 @@ static NativeResult NativeHandle_Sgeev(id<MTLDevice> device, id<MTLCommandBuffer
             auto unpackEigenvectors = [&](const std::vector<float>& v_real, float* outComplex) {
                 int64_t j = 0;
                 while (j < n) {
-                    if (wi[j] == 0.0f) {
+                    if (wi[j] == 0.0F) {
                         for (int64_t i = 0; i < n; i++) {
                             outComplex[(i * n + j) * 2] = v_real[j * n + i];
-                            outComplex[(i * n + j) * 2 + 1] = 0.0f;
+                            outComplex[(i * n + j) * 2 + 1] = 0.0F;
                         }
                         j++;
                     } else {
@@ -1473,7 +1480,8 @@ static NativeResult NativeHandle_Sgees(id<MTLDevice> device, id<MTLCommandBuffer
                 for (int64_t j = 0; j < n; j++)
                     aCm[j * n + i] = inputRaw[i * n + j];
 
-            std::vector<float> wr(n), wi(n);
+            std::vector<float> wr(n);
+            std::vector<float> wi(n);
             std::vector<float> vs(computeVectors ? n * n : 1);
 
             // Query workspace

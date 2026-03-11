@@ -202,7 +202,7 @@ static ProcessResult HandleConvolution(HandlerContext& ctx) {
 
     // Determine spatial rank and batch group count
     size_t spatialRank = inputSpatialDims.size();
-    int64_t batchGroupCount = convOp.getBatchGroupCount();
+    int64_t batchGroupCount = static_cast<int64_t>(convOp.getBatchGroupCount());
 
     bool is1D = (spatialRank == 1);
     if (spatialRank > 2) {
