@@ -69,4 +69,4 @@ git push
 
 echo ""
 echo "Done! Release ${CURRENT_VERSION} is being built."
-echo "Watch progress at: https://github.com/danielpcox/jax-mps/actions"
+echo "Watch progress at: https://github.com/danielpcox/applejax/actions"

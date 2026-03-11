@@ -26,11 +26,11 @@ inline std::string UnsupportedOpsMessage(const std::vector<std::string>& op_name
     return "Unsupported operation(s): " + op_list +
            ". The MPS backend does not have a handler for these operations.\n\n"
            "File an issue: "
-           "https://github.com/danielpcox/jax-mps/issues/new?template=missing-op.yml"
+           "https://github.com/danielpcox/applejax/issues/new?template=missing-op.yml"
            "&title=Missing+op:+" +
            encoded + "&op-name=" + encoded +
            "\n"
-           "Add it yourself: https://github.com/danielpcox/jax-mps/blob/main/CONTRIBUTING.md";
+           "Add it yourself: https://github.com/danielpcox/applejax/blob/main/CONTRIBUTING.md";
 }
 
 }  // namespace jax_mps

@@ -21,8 +21,8 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/danielpcox/jax-mps"
-Repository = "https://github.com/danielpcox/jax-mps"
+Homepage = "https://github.com/danielpcox/applejax"
+Repository = "https://github.com/danielpcox/applejax"
 
 [project.entry-points."jax_plugins"]
 mps = "jax_plugins.mps"

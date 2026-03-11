@@ -1,4 +1,4 @@
-name: jax-mps
+name: applejax
 
 on:
   push:
