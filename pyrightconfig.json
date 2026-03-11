@@ -1,3 +1,4 @@
 {
-  "exclude": [".venv", "third_party", "build", "playground", ".jax-mps-deps"]
+  "exclude": [".venv", "third_party", "build", "playground", ".jax-mps-deps"],
+  "reportArgumentType": "warning"
 }

@@ -189,7 +189,8 @@ static ProcessResult HandleDynamicSlice(HandlerContext& ctx) {
         int64_t maxStart = std::max(dimSize - sliceSize, (int64_t)0);
 
         MPSGraphTensor* zero = [ctx.graph constantWithScalar:0 dataType:startIdx.dataType];
-        MPSGraphTensor* maxVal = [ctx.graph constantWithScalar:static_cast<double>(maxStart) dataType:startIdx.dataType];
+        MPSGraphTensor* maxVal = [ctx.graph constantWithScalar:static_cast<double>(maxStart)
+                                                      dataType:startIdx.dataType];
         startIdx = [ctx.graph clampWithTensor:startIdx
                                minValueTensor:zero
                                maxValueTensor:maxVal
@@ -500,7 +501,8 @@ static ProcessResult HandleDynamicUpdateSlice(HandlerContext& ctx) {
         int64_t maxStart = std::max(dimSize - updateSize, (int64_t)0);
 
         MPSGraphTensor* zero = [ctx.graph constantWithScalar:0 dataType:startIdx.dataType];
-        MPSGraphTensor* maxVal = [ctx.graph constantWithScalar:static_cast<double>(maxStart) dataType:startIdx.dataType];
+        MPSGraphTensor* maxVal = [ctx.graph constantWithScalar:static_cast<double>(maxStart)
+                                                      dataType:startIdx.dataType];
         startIdx = [ctx.graph clampWithTensor:startIdx
                                minValueTensor:zero
                                maxValueTensor:maxVal

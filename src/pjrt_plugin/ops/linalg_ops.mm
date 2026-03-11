@@ -1078,8 +1078,9 @@ static NativeResult NativeHandle_Sgesdd(id<MTLDevice> device, id<MTLCommandBuffe
             if (jobz == 'N') {
                 lrwork_val = static_cast<__CLPK_integer>(7 * mn_min);
             } else {
-                lrwork_val = static_cast<__CLPK_integer>(std::max(5 * mn_min * mn_min + 5 * mn_min,
-                                      2 * mn_max * mn_min + 2 * mn_min * mn_min + mn_min));
+                lrwork_val = static_cast<__CLPK_integer>(
+                    std::max(5 * mn_min * mn_min + 5 * mn_min,
+                             2 * mn_max * mn_min + 2 * mn_min * mn_min + mn_min));
             }
             std::vector<float> rwork(lrwork_val);
 
