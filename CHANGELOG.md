@@ -19,6 +19,7 @@
 - `reduce_precision` NaN passthrough. (#21)
 
 ### Changed
+- **Renamed to `applejax`** on PyPI. Install with `pip install applejax`. Fork of [tillahoffmann/jax-mps](https://github.com/tillahoffmann/jax-mps).
 - `equinox` and `optax` moved from hard dependencies to dev dependencies. Users only need `jax` and `jaxlib`.
 - PLAN.md renamed to CUDA_PARITY.md and rewritten as a public-facing status document.
 - README updated with accurate op counts, known limitations, and project structure.
@@ -132,7 +133,7 @@
 ## 0.9.1 — 2026-01-26
 
 ### Added
-- **PyPI release** — `pip install jax-mps`.
+- **PyPI release** — `pip install jax-mps` (later renamed to `applejax`).
 - ResNet18 CIFAR-10 example with 3x MPS speedup.
 - Microbenchmark script.
 - pyright type checking.

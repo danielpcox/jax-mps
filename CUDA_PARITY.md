@@ -31,7 +31,7 @@ Feature parity with `jaxlib[cuda12]` for single-GPU workloads.
 
 ## Apple MPS Framework Limitations
 
-These are hardware or framework constraints that cannot be fixed in jax-mps:
+These are hardware or framework constraints that cannot be fixed in applejax:
 
 | Issue | Workaround |
 |-------|------------|
@@ -61,4 +61,4 @@ MPS excels at compute-bound workloads (large matmul, batched attention). Dispatc
 - **Performance:** Graph fusion, Metal shader cache tuning, profiling
 - **Broader dtypes:** float8/FP8 (needs Metal support), int4 (needs custom shaders)
 - **Multi-device:** Collective ops (all_reduce, etc.) — N/A for single-GPU Macs
-- **Upstream:** Report MPS bugs to Apple, contribute fixes to tillahoffmann/jax-mps
+- **Upstream:** Report MPS bugs to Apple

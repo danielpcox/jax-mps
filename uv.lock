@@ -26,6 +26,51 @@ wheels = [
 ]
 
 [[package]]
+name = "applejax"
+version = "0.9.7"
+source = { editable = "." }
+dependencies = [
+    { name = "jax" },
+    { name = "jaxlib" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "ctcache" },
+    { name = "equinox" },
+    { name = "flax" },
+    { name = "numpyro" },
+    { name = "optax" },
+    { name = "pre-commit" },
+    { name = "pyright" },
+    { name = "pytest" },
+    { name = "pytest-benchmark" },
+    { name = "ruff" },
+    { name = "tqdm" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "jax", specifier = ">=0.9.0,<0.10" },
+    { name = "jaxlib", specifier = ">=0.9.0,<0.10" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "ctcache", git = "https://github.com/matus-chochlik/ctcache.git" },
+    { name = "equinox", specifier = ">=0.13.5" },
+    { name = "flax", specifier = ">=0.10.7" },
+    { name = "numpyro", specifier = ">=0.20.0" },
+    { name = "optax", specifier = ">=0.2.6" },
+    { name = "pre-commit", specifier = ">=4.5.1" },
+    { name = "pyright", specifier = ">=1.1.408" },
+    { name = "pytest" },
+    { name = "pytest-benchmark", specifier = ">=5.2.3" },
+    { name = "ruff", specifier = ">=0.14.13" },
+    { name = "tqdm", specifier = ">=4.67.1" },
+]
+
+[[package]]
 name = "blinker"
 version = "1.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -340,51 +385,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/39/28/13186d20cbece4944577de774269c620b2f5f5ea163748b61e48e423f47f/jax-0.9.0.tar.gz", hash = "sha256:e5ce9d6991333aeaad37729dd8315d29c4b094ea9476a32fb49933b556c723fb", size = 2534495, upload-time = "2026-01-20T23:06:47.099Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d8/99/91fd58d495f03495e93b3f6100336d7a1df212aa90ad37d1322b8bb7df71/jax-0.9.0-py3-none-any.whl", hash = "sha256:be1c7c1fa91b338f071805a786f9366d4a08361b711b0568ef5a157226c68915", size = 2955442, upload-time = "2026-01-20T22:27:05.128Z" },
-]
-
-[[package]]
-name = "jax-mps"
-version = "0.9.7"
-source = { editable = "." }
-dependencies = [
-    { name = "jax" },
-    { name = "jaxlib" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "ctcache" },
-    { name = "equinox" },
-    { name = "flax" },
-    { name = "numpyro" },
-    { name = "optax" },
-    { name = "pre-commit" },
-    { name = "pyright" },
-    { name = "pytest" },
-    { name = "pytest-benchmark" },
-    { name = "ruff" },
-    { name = "tqdm" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "jax", specifier = ">=0.9.0,<0.10" },
-    { name = "jaxlib", specifier = ">=0.9.0,<0.10" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "ctcache", git = "https://github.com/matus-chochlik/ctcache.git" },
-    { name = "equinox", specifier = ">=0.13.5" },
-    { name = "flax", specifier = ">=0.10.7" },
-    { name = "numpyro", specifier = ">=0.20.0" },
-    { name = "optax", specifier = ">=0.2.6" },
-    { name = "pre-commit", specifier = ">=4.5.1" },
-    { name = "pyright", specifier = ">=1.1.408" },
-    { name = "pytest" },
-    { name = "pytest-benchmark", specifier = ">=5.2.3" },
-    { name = "ruff", specifier = ">=0.14.13" },
-    { name = "tqdm", specifier = ">=4.67.1" },
 ]
 
 [[package]]

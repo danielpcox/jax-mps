@@ -80,7 +80,7 @@ def _check_jaxlib_version():
         installed = (int(parts[0]), int(parts[1]))
         if installed != _BUILT_FOR_JAXLIB:
             warnings.warn(
-                f"jax-mps was built for jaxlib {_BUILT_FOR_JAXLIB[0]}.{_BUILT_FOR_JAXLIB[1]}.x, "
+                f"applejax was built for jaxlib {_BUILT_FOR_JAXLIB[0]}.{_BUILT_FOR_JAXLIB[1]}.x, "
                 f"but jaxlib {version_str} is installed. This may cause compatibility "
                 f"issues with StableHLO bytecode parsing. Consider installing jaxlib "
                 f">={_BUILT_FOR_JAXLIB[0]}.{_BUILT_FOR_JAXLIB[1]}.0,"

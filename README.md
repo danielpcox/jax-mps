@@ -1,11 +1,13 @@
-# jax-mps
+# applejax
 
 A JAX backend for Apple Metal Performance Shaders (MPS), enabling GPU-accelerated JAX computations on Apple Silicon.
+
+> Fork of [tillahoffmann/jax-mps](https://github.com/tillahoffmann/jax-mps) with full linear algebra, complex number support, comprehensive scatter/gather handling, and 2000+ tests.
 
 ## Quick Start
 
 ```bash
-pip install jax-mps
+pip install applejax
 ```
 
 The plugin registers itself with JAX automatically. Set `JAX_PLATFORMS=mps` to select it explicitly.
@@ -14,7 +16,7 @@ Requires macOS on Apple Silicon, Python >= 3.11, and jaxlib 0.9.x.
 
 ## Performance
 
-jax-mps achieves a modest 3x speed-up over the CPU backend when training a simple ResNet18 model on CIFAR-10 using an M4 MacBook Air.
+applejax achieves a modest 3x speed-up over the CPU backend when training a simple ResNet18 model on CIFAR-10 using an M4 MacBook Air.
 
 ```bash
 $ JAX_PLATFORMS=cpu uv run examples/resnet/main.py --steps=30
@@ -83,7 +85,7 @@ Transformer components work end-to-end: multi-head attention, RoPE, RMSNorm, Swi
 
 ## Known Limitations
 
-These are **Metal/MPS hardware constraints**, not bugs in jax-mps:
+These are **Metal/MPS hardware constraints**, not bugs in applejax:
 
 | Limitation | Impact | Workaround |
 |------------|--------|------------|
@@ -137,7 +139,7 @@ uv run pytest
 
 ### Version Pinning
 
-jax-mps is built against the StableHLO bytecode format matching jaxlib 0.9.x. The `setup_deps.sh` script pins LLVM and StableHLO to specific commits from the XLA version used by jaxlib 0.9.0.
+applejax is built against the StableHLO bytecode format matching jaxlib 0.9.x. The `setup_deps.sh` script pins LLVM and StableHLO to specific commits from the XLA version used by jaxlib 0.9.0.
 
 **Runtime compatibility:** Any jaxlib 0.9.x release should work with a built binary — the bytecode format is stable within a minor version series. The plugin will warn (not error) if the minor version doesn't match.
 
@@ -157,7 +159,7 @@ Then update `STABLEHLO_COMMIT` and `LLVM_COMMIT_OVERRIDE` in `setup_deps.sh`.
 ## Project Structure
 
 ```
-jax-mps/
+applejax/
 ├── CMakeLists.txt
 ├── src/
 │   ├── jax_plugins/mps/         # Python plugin: registration + lowering rules

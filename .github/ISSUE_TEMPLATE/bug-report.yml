@@ -26,8 +26,8 @@ body:
   - type: input
     id: version
     attributes:
-      label: jax-mps version
-      description: Output of `python -c "import jax_mps; print(jax_mps.__version__)"` or the pip-installed version.
+      label: applejax version
+      description: Output of `pip show applejax | grep Version` or the installed version.
       placeholder: "0.9.7"
     validations:
       required: true

@@ -1,5 +1,5 @@
 [project]
-name = "jax-mps"
+name = "applejax"
 version = "0.9.7"
 description = "JAX backend for Apple Metal Performance Shaders (MPS)"
 readme = "README.md"
@@ -21,8 +21,8 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/tillahoffmann/jax-mps"
-Repository = "https://github.com/tillahoffmann/jax-mps"
+Homepage = "https://github.com/danielpcox/applejax"
+Repository = "https://github.com/danielpcox/applejax"
 
 [project.entry-points."jax_plugins"]
 mps = "jax_plugins.mps"
