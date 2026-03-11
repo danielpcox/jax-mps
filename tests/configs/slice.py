@@ -440,7 +440,7 @@ def make_slice_op_configs():
             # Tests scatter with update_window_dims covering all dims, N=1 scatter point
             OperationTestConfig(
                 lambda logits, labels: jnp.mean(
-                    jax.vmap(lambda l, lab: -jax.nn.log_softmax(l[-1])[lab])(
+                    jax.vmap(lambda logit, lab: -jax.nn.log_softmax(logit[-1])[lab])(
                         logits, labels
                     )
                 ),

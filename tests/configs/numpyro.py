@@ -1,4 +1,3 @@
-import pytest
 from jax import numpy as jnp
 from jax import random
 from numpyro import distributions as dists

@@ -121,7 +121,6 @@ def _register_lowering_rules():
             algorithm,
         ):
             """Lower svd to custom_call @mps_sgesdd."""
-            import numpy as np
             from jax._src.core import ShapedArray
 
             operand_aval = ctx.avals_in[0]
@@ -239,7 +238,6 @@ def _register_lowering_rules():
             select_callable,
         ):
             """Lower schur to custom_call @mps_sgees."""
-            operand_aval = ctx.avals_in[0]
             t_aval = ctx.avals_out[0]
             result_types = [mlir.aval_to_ir_type(t_aval)]
             if compute_schur_vectors:
