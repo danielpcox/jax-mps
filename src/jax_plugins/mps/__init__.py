@@ -97,7 +97,9 @@ def _register_lowering_rules():
         from jax._src.interpreters import mlir
         from jax._src.lax import linalg as lax_linalg
 
-        def _eigh_mps_lowering(ctx, operand, *, lower, sort_eigenvalues, subset_by_index, algorithm):
+        def _eigh_mps_lowering(
+            ctx, operand, *, lower, sort_eigenvalues, subset_by_index, algorithm
+        ):
             """Lower eigh to custom_call @mps_syevd."""
             v_aval, w_aval = ctx.avals_out
             result_types = [mlir.aval_to_ir_type(v_aval), mlir.aval_to_ir_type(w_aval)]
@@ -196,7 +198,9 @@ def _register_lowering_rules():
                 mlir.aval_to_ir_type(vr_aval),
                 mlir.aval_to_ir_type(info_aval),
             ]
-            config = f"{int(compute_left_eigenvectors)},{int(compute_right_eigenvectors)}"
+            config = (
+                f"{int(compute_left_eigenvectors)},{int(compute_right_eigenvectors)}"
+            )
             op = mlir.custom_call(
                 "mps_sgeev",
                 result_types=result_types,

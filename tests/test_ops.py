@@ -219,19 +219,27 @@ def test_dot_general_scalar_vector_gradient() -> None:
     x = jnp.array([0.5, -0.5])
 
     # grad of x^T A x w.r.t. x (generates scalar * vector dot_general in backward)
-    g_cpu = numpy.asarray(jax.jit(jax.grad(lambda x, A: jnp.dot(x, jnp.dot(A, x))),
-                                   device=cpu)(x, A))
-    g_mps = numpy.asarray(jax.jit(jax.grad(lambda x, A: jnp.dot(x, jnp.dot(A, x))),
-                                   device=mps)(jax.device_put(x, mps),
-                                               jax.device_put(A, mps)))
+    g_cpu = numpy.asarray(
+        jax.jit(jax.grad(lambda x, A: jnp.dot(x, jnp.dot(A, x))), device=cpu)(x, A)
+    )
+    g_mps = numpy.asarray(
+        jax.jit(jax.grad(lambda x, A: jnp.dot(x, jnp.dot(A, x))), device=mps)(
+            jax.device_put(x, mps), jax.device_put(A, mps)
+        )
+    )
     numpy.testing.assert_allclose(g_mps, g_cpu, atol=1e-5)
 
     # grad of x^T A x w.r.t. A (generates outer product via scalar broadcast)
-    gA_cpu = numpy.asarray(jax.jit(jax.grad(lambda A, x: jnp.dot(x, jnp.dot(A, x)),
-                                             argnums=0), device=cpu)(A, x))
-    gA_mps = numpy.asarray(jax.jit(jax.grad(lambda A, x: jnp.dot(x, jnp.dot(A, x)),
-                                             argnums=0), device=mps)(
-                                    jax.device_put(A, mps), jax.device_put(x, mps)))
+    gA_cpu = numpy.asarray(
+        jax.jit(
+            jax.grad(lambda A, x: jnp.dot(x, jnp.dot(A, x)), argnums=0), device=cpu
+        )(A, x)
+    )
+    gA_mps = numpy.asarray(
+        jax.jit(
+            jax.grad(lambda A, x: jnp.dot(x, jnp.dot(A, x)), argnums=0), device=mps
+        )(jax.device_put(A, mps), jax.device_put(x, mps))
+    )
     numpy.testing.assert_allclose(gA_mps, gA_cpu, atol=1e-5)
 
 
@@ -247,8 +255,9 @@ def test_dot_general_3d_1d_matmul() -> None:
     A = jnp.ones((4, 3, 5))
     v = jnp.ones((5,))
     cpu_result = numpy.asarray(jax.jit(jnp.matmul, device=cpu)(A, v))
-    mps_result = numpy.asarray(jax.jit(jnp.matmul, device=mps)(
-        jax.device_put(A, mps), jax.device_put(v, mps)))
+    mps_result = numpy.asarray(
+        jax.jit(jnp.matmul, device=mps)(jax.device_put(A, mps), jax.device_put(v, mps))
+    )
     numpy.testing.assert_allclose(mps_result, cpu_result, atol=1e-5)
 
     # 3D @ 1D inside lax.scan (exercises JIT + control flow + matmul interaction)
@@ -261,8 +270,9 @@ def test_dot_general_3d_1d_matmul() -> None:
         return result
 
     cpu_scan = numpy.asarray(jax.jit(run_scan, device=cpu)(A, v))
-    mps_scan = numpy.asarray(jax.jit(run_scan, device=mps)(
-        jax.device_put(A, mps), jax.device_put(v, mps)))
+    mps_scan = numpy.asarray(
+        jax.jit(run_scan, device=mps)(jax.device_put(A, mps), jax.device_put(v, mps))
+    )
     numpy.testing.assert_allclose(mps_scan, cpu_scan, atol=1e-5)
 
     # Gradient through 3D @ 1D
@@ -270,8 +280,9 @@ def test_dot_general_3d_1d_matmul() -> None:
         return jnp.sum(A @ v)
 
     g_cpu = numpy.asarray(jax.jit(jax.grad(loss_fn), device=cpu)(v))
-    g_mps = numpy.asarray(jax.jit(jax.grad(loss_fn), device=mps)(
-        jax.device_put(v, mps)))
+    g_mps = numpy.asarray(
+        jax.jit(jax.grad(loss_fn), device=mps)(jax.device_put(v, mps))
+    )
     numpy.testing.assert_allclose(g_mps, g_cpu, atol=1e-5)
 
 
@@ -287,11 +298,14 @@ def test_dot_general_2d_outer_product() -> None:
     b = jnp.array([[5.0, 6.0], [7.0, 8.0]])
 
     # einsum 'ij,kl->ikjl' is a 2D outer product (no contraction, no batch)
-    cpu_result = numpy.asarray(jax.jit(
-        lambda a, b: jnp.einsum('ij,kl->ikjl', a, b), device=cpu)(a, b))
-    mps_result = numpy.asarray(jax.jit(
-        lambda a, b: jnp.einsum('ij,kl->ikjl', a, b), device=mps)(
-        jax.device_put(a, mps), jax.device_put(b, mps)))
+    cpu_result = numpy.asarray(
+        jax.jit(lambda a, b: jnp.einsum("ij,kl->ikjl", a, b), device=cpu)(a, b)
+    )
+    mps_result = numpy.asarray(
+        jax.jit(lambda a, b: jnp.einsum("ij,kl->ikjl", a, b), device=mps)(
+            jax.device_put(a, mps), jax.device_put(b, mps)
+        )
+    )
     numpy.testing.assert_allclose(mps_result, cpu_result, atol=1e-5)
 
 
@@ -307,8 +321,9 @@ def test_reduce_window_identity() -> None:
 
     @jax.jit
     def identity_pool(x):
-        return jax.lax.reduce_window(x, 0.0, jax.lax.add, (1, 1, 1, 1),
-                                     (1, 1, 1, 1), 'VALID')
+        return jax.lax.reduce_window(
+            x, 0.0, jax.lax.add, (1, 1, 1, 1), (1, 1, 1, 1), "VALID"
+        )
 
     cpu_result = numpy.asarray(identity_pool(jax.device_put(x, cpu)))
     mps_result = numpy.asarray(identity_pool(jax.device_put(x, mps)))
@@ -335,45 +350,67 @@ def test_depthwise_conv_gradient() -> None:
     dw_kernel = jax.random.normal(k2, (3, 3, 1, channels), dtype=jnp.float32) * 0.1
 
     def depthwise_conv_loss(x, kernel):
-        dn = lax.conv_dimension_numbers(x.shape, kernel.shape, ('NHWC', 'HWIO', 'NHWC'))
+        dn = lax.conv_dimension_numbers(x.shape, kernel.shape, ("NHWC", "HWIO", "NHWC"))
         out = lax.conv_general_dilated(
-            x, kernel, window_strides=(1, 1), padding='SAME',
-            dimension_numbers=dn, feature_group_count=channels
+            x,
+            kernel,
+            window_strides=(1, 1),
+            padding="SAME",
+            dimension_numbers=dn,
+            feature_group_count=channels,
         )
-        return jnp.sum(out ** 2)
+        return jnp.sum(out**2)
 
     # Compare forward
     cpu_fwd = numpy.asarray(jax.jit(depthwise_conv_loss, device=cpu)(x, dw_kernel))
-    mps_fwd = numpy.asarray(jax.jit(depthwise_conv_loss, device=mps)(
-        jax.device_put(x, mps), jax.device_put(dw_kernel, mps)))
+    mps_fwd = numpy.asarray(
+        jax.jit(depthwise_conv_loss, device=mps)(
+            jax.device_put(x, mps), jax.device_put(dw_kernel, mps)
+        )
+    )
     numpy.testing.assert_allclose(mps_fwd, cpu_fwd, atol=1e-4)
 
     # Compare gradients (kernel gradient uses batch_group_count internally)
     grad_fn = jax.grad(depthwise_conv_loss, argnums=(0, 1))
     g_cpu_x, g_cpu_k = jax.jit(grad_fn, device=cpu)(x, dw_kernel)
     g_mps_x, g_mps_k = jax.jit(grad_fn, device=mps)(
-        jax.device_put(x, mps), jax.device_put(dw_kernel, mps))
-    numpy.testing.assert_allclose(numpy.asarray(g_mps_x), numpy.asarray(g_cpu_x), atol=1e-4)
-    numpy.testing.assert_allclose(numpy.asarray(g_mps_k), numpy.asarray(g_cpu_k), atol=1e-4)
+        jax.device_put(x, mps), jax.device_put(dw_kernel, mps)
+    )
+    numpy.testing.assert_allclose(
+        numpy.asarray(g_mps_x), numpy.asarray(g_cpu_x), atol=1e-4
+    )
+    numpy.testing.assert_allclose(
+        numpy.asarray(g_mps_k), numpy.asarray(g_cpu_k), atol=1e-4
+    )
 
     # Also test with different group count (2 groups instead of fully depthwise)
     k3 = jax.random.PRNGKey(99)
     kernel_2g = jax.random.normal(k3, (3, 3, 2, channels), dtype=jnp.float32) * 0.1
 
     def grouped_conv_loss(x, kernel):
-        dn = lax.conv_dimension_numbers(x.shape, kernel.shape, ('NHWC', 'HWIO', 'NHWC'))
+        dn = lax.conv_dimension_numbers(x.shape, kernel.shape, ("NHWC", "HWIO", "NHWC"))
         out = lax.conv_general_dilated(
-            x, kernel, window_strides=(1, 1), padding='SAME',
-            dimension_numbers=dn, feature_group_count=2
+            x,
+            kernel,
+            window_strides=(1, 1),
+            padding="SAME",
+            dimension_numbers=dn,
+            feature_group_count=2,
         )
-        return jnp.sum(out ** 2)
+        return jnp.sum(out**2)
 
-    g2_cpu_x, g2_cpu_k = jax.jit(jax.grad(grouped_conv_loss, argnums=(0, 1)), device=cpu)(
-        x, kernel_2g)
-    g2_mps_x, g2_mps_k = jax.jit(jax.grad(grouped_conv_loss, argnums=(0, 1)), device=mps)(
-        jax.device_put(x, mps), jax.device_put(kernel_2g, mps))
-    numpy.testing.assert_allclose(numpy.asarray(g2_mps_x), numpy.asarray(g2_cpu_x), atol=1e-4)
-    numpy.testing.assert_allclose(numpy.asarray(g2_mps_k), numpy.asarray(g2_cpu_k), atol=1e-4)
+    g2_cpu_x, g2_cpu_k = jax.jit(
+        jax.grad(grouped_conv_loss, argnums=(0, 1)), device=cpu
+    )(x, kernel_2g)
+    g2_mps_x, g2_mps_k = jax.jit(
+        jax.grad(grouped_conv_loss, argnums=(0, 1)), device=mps
+    )(jax.device_put(x, mps), jax.device_put(kernel_2g, mps))
+    numpy.testing.assert_allclose(
+        numpy.asarray(g2_mps_x), numpy.asarray(g2_cpu_x), atol=1e-4
+    )
+    numpy.testing.assert_allclose(
+        numpy.asarray(g2_mps_k), numpy.asarray(g2_cpu_k), atol=1e-4
+    )
 
 
 def test_vmap_dynamic_slice() -> None:
@@ -395,8 +432,11 @@ def test_vmap_dynamic_slice() -> None:
         return lax.dynamic_slice(x, (s,), (4,))
 
     cpu_result = numpy.asarray(jax.jit(jax.vmap(slice_one), device=cpu)(xs, starts))
-    mps_result = numpy.asarray(jax.jit(jax.vmap(slice_one), device=mps)(
-        jax.device_put(xs, mps), jax.device_put(starts, mps)))
+    mps_result = numpy.asarray(
+        jax.jit(jax.vmap(slice_one), device=mps)(
+            jax.device_put(xs, mps), jax.device_put(starts, mps)
+        )
+    )
     numpy.testing.assert_allclose(mps_result, cpu_result, atol=1e-5)
 
 
@@ -418,8 +458,12 @@ def test_outer_product_then_batched_dot() -> None:
     b = jax.random.normal(jax.random.PRNGKey(1), (6,), dtype=jnp.float32)
     c = jax.random.normal(jax.random.PRNGKey(2), (4,), dtype=jnp.float32)
 
-    cpu_outer = numpy.asarray(jnp.einsum('i,j,k->ijk', *[jax.device_put(x, cpu) for x in [a, b, c]]))
-    mps_outer = numpy.asarray(jnp.einsum('i,j,k->ijk', *[jax.device_put(x, mps) for x in [a, b, c]]))
+    cpu_outer = numpy.asarray(
+        jnp.einsum("i,j,k->ijk", *[jax.device_put(x, cpu) for x in [a, b, c]])
+    )
+    mps_outer = numpy.asarray(
+        jnp.einsum("i,j,k->ijk", *[jax.device_put(x, mps) for x in [a, b, c]])
+    )
     numpy.testing.assert_allclose(mps_outer, cpu_outer, atol=1e-5)
 
     # Gradient through 3-tensor einsum (exercises dot_general with batch+contract dims)
@@ -428,13 +472,16 @@ def test_outer_product_then_batched_dot() -> None:
     C = jax.random.normal(jax.random.PRNGKey(4), (6, 7, 8), dtype=jnp.float32)
 
     def loss(A, B, C):
-        return jnp.sum(jnp.einsum('ijk,jkl,klm->im', A, B, C) ** 2)
+        return jnp.sum(jnp.einsum("ijk,jkl,klm->im", A, B, C) ** 2)
 
     with jax.default_device(cpu):
         ga_cpu = numpy.asarray(jax.grad(loss)(A, B, C))
     with jax.default_device(mps):
-        ga_mps = numpy.asarray(jax.grad(loss)(
-            jax.device_put(A, mps), jax.device_put(B, mps), jax.device_put(C, mps)))
+        ga_mps = numpy.asarray(
+            jax.grad(loss)(
+                jax.device_put(A, mps), jax.device_put(B, mps), jax.device_put(C, mps)
+            )
+        )
     numpy.testing.assert_allclose(ga_mps, ga_cpu, atol=1e-3, rtol=1e-3)
 
 
@@ -462,7 +509,9 @@ def test_dynamic_slice_clamps_oob_indices() -> None:
         cpu_r2 = lax.dynamic_slice(jax.device_put(x2, cpu), (3, 3), (2, 2))
     with jax.default_device(mps):
         mps_r2 = lax.dynamic_slice(jax.device_put(x2, mps), (3, 3), (2, 2))
-    numpy.testing.assert_allclose(numpy.asarray(mps_r2), numpy.asarray(cpu_r2), atol=1e-6)
+    numpy.testing.assert_allclose(
+        numpy.asarray(mps_r2), numpy.asarray(cpu_r2), atol=1e-6
+    )
 
     # 3D: start=(6,6,6), size=(3,3,3), dims=(8,8,8) -> clamp to (5,5,5)
     key = jax.random.PRNGKey(304)
@@ -471,15 +520,23 @@ def test_dynamic_slice_clamps_oob_indices() -> None:
         cpu_r3 = lax.dynamic_slice(jax.device_put(x3, cpu), (6, 6, 6), (3, 3, 3))
     with jax.default_device(mps):
         mps_r3 = lax.dynamic_slice(jax.device_put(x3, mps), (6, 6, 6), (3, 3, 3))
-    numpy.testing.assert_allclose(numpy.asarray(mps_r3), numpy.asarray(cpu_r3), atol=1e-5)
+    numpy.testing.assert_allclose(
+        numpy.asarray(mps_r3), numpy.asarray(cpu_r3), atol=1e-5
+    )
 
     # dynamic_update_slice with OOB start
-    update = jnp.array([99., 88., 77.])
+    update = jnp.array([99.0, 88.0, 77.0])
     with jax.default_device(cpu):
-        cpu_dus = lax.dynamic_update_slice(jax.device_put(x, cpu), jax.device_put(update, cpu), (9,))
+        cpu_dus = lax.dynamic_update_slice(
+            jax.device_put(x, cpu), jax.device_put(update, cpu), (9,)
+        )
     with jax.default_device(mps):
-        mps_dus = lax.dynamic_update_slice(jax.device_put(x, mps), jax.device_put(update, mps), (9,))
-    numpy.testing.assert_allclose(numpy.asarray(mps_dus), numpy.asarray(cpu_dus), atol=1e-6)
+        mps_dus = lax.dynamic_update_slice(
+            jax.device_put(x, mps), jax.device_put(update, mps), (9,)
+        )
+    numpy.testing.assert_allclose(
+        numpy.asarray(mps_dus), numpy.asarray(cpu_dus), atol=1e-6
+    )
 
 
 def test_gather_clamps_oob_indices() -> None:
@@ -496,9 +553,13 @@ def test_gather_clamps_oob_indices() -> None:
     indices = jnp.array([0, 5, 100, -1, 3])
 
     with jax.default_device(cpu):
-        cpu_r = jnp.take(jax.device_put(x, cpu), jax.device_put(indices, cpu), axis=0, mode="clip")
+        cpu_r = jnp.take(
+            jax.device_put(x, cpu), jax.device_put(indices, cpu), axis=0, mode="clip"
+        )
     with jax.default_device(mps):
-        mps_r = jnp.take(jax.device_put(x, mps), jax.device_put(indices, mps), axis=0, mode="clip")
+        mps_r = jnp.take(
+            jax.device_put(x, mps), jax.device_put(indices, mps), axis=0, mode="clip"
+        )
     numpy.testing.assert_allclose(numpy.asarray(mps_r), numpy.asarray(cpu_r), atol=1e-6)
 
 

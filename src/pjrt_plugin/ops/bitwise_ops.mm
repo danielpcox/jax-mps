@@ -212,7 +212,7 @@ static ProcessResult HandleCountLeadingZeros(HandlerContext& ctx) {
     // For larger values, the cast may round, but the exponent (and thus CLZ) is still correct
     // because rounding only affects mantissa bits below the MSB.
 
-    MPSGraphTensor* zero = [ctx.graph constantWithScalar:0 shape:@[ @1 ] dataType:unsignedType];
+    MPSGraphTensor* zero = [ctx.graph constantWithScalar:0 shape:@[@1] dataType:unsignedType];
     MPSGraphTensor* isZero = [ctx.graph equalWithPrimaryTensor:x secondaryTensor:zero name:nil];
 
     // Compute CLZ using float conversion: floor(log2(x)) gives MSB position.
@@ -226,8 +226,9 @@ static ProcessResult HandleCountLeadingZeros(HandlerContext& ctx) {
     MPSGraphTensor* log2x = [ctx.graph logarithmBase2WithTensor:xFloat name:nil];
     MPSGraphTensor* floorLog2 = [ctx.graph floorWithTensor:log2x name:nil];
 
-    MPSGraphTensor* bwMinus1F =
-        [ctx.graph constantWithScalar:(bitWidth - 1) shape:@[ @1 ] dataType:MPSDataTypeFloat32];
+    MPSGraphTensor* bwMinus1F = [ctx.graph constantWithScalar:(bitWidth - 1)
+                                                        shape:@[@1]
+                                                     dataType:MPSDataTypeFloat32];
     MPSGraphTensor* clzFloat = [ctx.graph subtractionWithPrimaryTensor:bwMinus1F
                                                        secondaryTensor:floorLog2
                                                                   name:nil];
@@ -237,8 +238,9 @@ static ProcessResult HandleCountLeadingZeros(HandlerContext& ctx) {
     // log2 gives k+1 instead of k, so n is one too small.
     // Check: if x >> (bitWidth - 1 - n) == 0, then n should be n + 1.
     // (The MSB isn't actually at position bitWidth-1-n.)
-    MPSGraphTensor* bwMinus1 =
-        [ctx.graph constantWithScalar:(bitWidth - 1) shape:@[ @1 ] dataType:unsignedType];
+    MPSGraphTensor* bwMinus1 = [ctx.graph constantWithScalar:(bitWidth - 1)
+                                                       shape:@[@1]
+                                                    dataType:unsignedType];
     MPSGraphTensor* msbPos = [ctx.graph subtractionWithPrimaryTensor:bwMinus1
                                                      secondaryTensor:n
                                                                 name:nil];
@@ -246,20 +248,19 @@ static ProcessResult HandleCountLeadingZeros(HandlerContext& ctx) {
                                                              secondaryTensor:msbPos
                                                                         name:nil];
     MPSGraphTensor* needsCorrection = [ctx.graph equalWithPrimaryTensor:checkBit
-                                                         secondaryTensor:zero
-                                                                    name:nil];
-    MPSGraphTensor* one = [ctx.graph constantWithScalar:1 shape:@[ @1 ] dataType:unsignedType];
-    MPSGraphTensor* nPlusOne = [ctx.graph additionWithPrimaryTensor:n
-                                                    secondaryTensor:one
-                                                               name:nil];
+                                                        secondaryTensor:zero
+                                                                   name:nil];
+    MPSGraphTensor* one = [ctx.graph constantWithScalar:1 shape:@[@1] dataType:unsignedType];
+    MPSGraphTensor* nPlusOne = [ctx.graph additionWithPrimaryTensor:n secondaryTensor:one name:nil];
     n = [ctx.graph selectWithPredicateTensor:needsCorrection
                          truePredicateTensor:nPlusOne
                         falsePredicateTensor:n
                                         name:nil];
 
     // For x == 0, CLZ = bitWidth
-    MPSGraphTensor* bitWidthTensor =
-        [ctx.graph constantWithScalar:bitWidth shape:@[ @1 ] dataType:unsignedType];
+    MPSGraphTensor* bitWidthTensor = [ctx.graph constantWithScalar:bitWidth
+                                                             shape:@[@1]
+                                                          dataType:unsignedType];
     n = [ctx.graph selectWithPredicateTensor:isZero
                          truePredicateTensor:bitWidthTensor
                         falsePredicateTensor:n

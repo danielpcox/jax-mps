@@ -251,7 +251,8 @@ static ProcessResult HandleIfOp(HandlerContext& ctx) {
     }
 
     // Evaluate both branches eagerly (MPS graph is declarative, not imperative)
-    auto evaluateBranch = [&](mlir::Region& region) -> std::pair<std::vector<MPSGraphTensor*>, std::string> {
+    auto evaluateBranch =
+        [&](mlir::Region& region) -> std::pair<std::vector<MPSGraphTensor*>, std::string> {
         mlir::Block& block = region.front();
         ValueMap branchValues = ctx.values;
 
@@ -284,7 +285,8 @@ static ProcessResult HandleIfOp(HandlerContext& ctx) {
         return ProcessResult::Error(falseError);
     }
 
-    if (trueOutputs.size() != ifOp->getNumResults() || falseOutputs.size() != ifOp->getNumResults()) {
+    if (trueOutputs.size() != ifOp->getNumResults() ||
+        falseOutputs.size() != ifOp->getNumResults()) {
         return ProcessResult::Error("stablehlo.if branch result arity mismatch");
     }
 
@@ -306,8 +308,7 @@ static ProcessResult HandleOptimizationBarrier(HandlerContext& ctx) {
     for (unsigned i = 0; i < ctx.op->getNumOperands(); i++) {
         MPSGraphTensor* input = GetTensor(ctx.values, ctx.op->getOperand(i));
         if (!input) {
-            return ProcessResult::Error("optimization_barrier: missing input " +
-                                        std::to_string(i));
+            return ProcessResult::Error("optimization_barrier: missing input " + std::to_string(i));
         }
         // Pass through via identity to maintain graph connectivity
         MPSGraphTensor* output = [ctx.graph identityWithTensor:input name:nil];

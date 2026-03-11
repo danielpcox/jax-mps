@@ -244,66 +244,140 @@ def make_unary_op_configs():
 
     # reduce_precision: truncate mantissa and/or exponent bits
     def _reduce_precision(exponent_bits, mantissa_bits):
-        return lambda x: lax.reduce_precision(x, exponent_bits=exponent_bits,
-                                              mantissa_bits=mantissa_bits)
+        return lambda x: lax.reduce_precision(
+            x, exponent_bits=exponent_bits, mantissa_bits=mantissa_bits
+        )
 
     yield from [
         OperationTestConfig(
             _reduce_precision(8, 7),
-            numpy.asarray([1.0, 0.1, 3.14159, -2.5, 0.0, 1e-10, 1e10,
-                           float('nan'), float('inf'), float('-inf')],
-                          dtype=numpy.float32),
+            numpy.asarray(
+                [
+                    1.0,
+                    0.1,
+                    3.14159,
+                    -2.5,
+                    0.0,
+                    1e-10,
+                    1e10,
+                    float("nan"),
+                    float("inf"),
+                    float("-inf"),
+                ],
+                dtype=numpy.float32,
+            ),
             differentiable_argnums=(),
             name="reduce_precision-bf16",
         ),
         OperationTestConfig(
             _reduce_precision(5, 10),
-            numpy.asarray([1.0, 0.1, 3.14159, -2.5, 0.0, 1e-10, 1e10,
-                           float('nan'), float('inf'), float('-inf')],
-                          dtype=numpy.float32),
+            numpy.asarray(
+                [
+                    1.0,
+                    0.1,
+                    3.14159,
+                    -2.5,
+                    0.0,
+                    1e-10,
+                    1e10,
+                    float("nan"),
+                    float("inf"),
+                    float("-inf"),
+                ],
+                dtype=numpy.float32,
+            ),
             differentiable_argnums=(),
             name="reduce_precision-f16",
         ),
         OperationTestConfig(
             _reduce_precision(8, 23),
-            numpy.asarray([1.0, 0.1, 3.14159, -2.5, 0.0, 1e-10, 1e10],
-                          dtype=numpy.float32),
+            numpy.asarray(
+                [1.0, 0.1, 3.14159, -2.5, 0.0, 1e-10, 1e10], dtype=numpy.float32
+            ),
             differentiable_argnums=(),
             name="reduce_precision-identity",
         ),
         OperationTestConfig(
             _reduce_precision(8, 0),
-            numpy.asarray([1.0, 0.5, 1.5, 2.5, 3.5, -1.5, -2.5,
-                           -0.0, float('nan'), float('inf'), float('-inf')],
-                          dtype=numpy.float32),
+            numpy.asarray(
+                [
+                    1.0,
+                    0.5,
+                    1.5,
+                    2.5,
+                    3.5,
+                    -1.5,
+                    -2.5,
+                    -0.0,
+                    float("nan"),
+                    float("inf"),
+                    float("-inf"),
+                ],
+                dtype=numpy.float32,
+            ),
             differentiable_argnums=(),
             name="reduce_precision-no-mantissa",
         ),
         OperationTestConfig(
             _reduce_precision(2, 1),
-            numpy.asarray([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, -1.0, -4.0,
-                           float('nan'), float('inf'), float('-inf')],
-                          dtype=numpy.float32),
+            numpy.asarray(
+                [
+                    0.0,
+                    0.5,
+                    1.0,
+                    1.5,
+                    2.0,
+                    3.0,
+                    -1.0,
+                    -4.0,
+                    float("nan"),
+                    float("inf"),
+                    float("-inf"),
+                ],
+                dtype=numpy.float32,
+            ),
             differentiable_argnums=(),
             name="reduce_precision-extreme",
         ),
         # exponent_bits=1: only zero and infinity are representable
         OperationTestConfig(
             _reduce_precision(1, 10),
-            numpy.asarray([0.0, -0.0, 0.5, 1.0, -1.0, 1e-38,
-                           float('nan'), float('inf'), float('-inf')],
-                          dtype=numpy.float32),
+            numpy.asarray(
+                [
+                    0.0,
+                    -0.0,
+                    0.5,
+                    1.0,
+                    -1.0,
+                    1e-38,
+                    float("nan"),
+                    float("inf"),
+                    float("-inf"),
+                ],
+                dtype=numpy.float32,
+            ),
             differentiable_argnums=(),
             name="reduce_precision-exp1",
         ),
         # Edge cases: negative zero, subnormals, boundary values near f16 range
         OperationTestConfig(
             _reduce_precision(5, 10),
-            numpy.asarray([-0.0, 1e-7, -1e-7,       # neg zero, subnormals
-                           6.1e4, 6.55e4, 7.0e4,     # near f16 max (~65504)
-                           5.96e-8, 1e-8,             # near f16 min subnormal
-                           float('nan'), float('inf'), float('-inf')],
-                          dtype=numpy.float32),
+            numpy.asarray(
+                [
+                    -0.0,
+                    1e-7,
+                    -1e-7,  # neg zero, subnormals
+                    6.1e4,
+                    6.55e4,
+                    7.0e4,  # near f16 max (~65504)
+                    5.96e-8,
+                    1e-8,  # near f16 min subnormal
+                    float("nan"),
+                    float("inf"),
+                    float("-inf"),
+                ],
+                dtype=numpy.float32,
+            ),
             differentiable_argnums=(),
             name="reduce_precision-f16-edges",
         ),

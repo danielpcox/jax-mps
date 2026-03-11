@@ -151,8 +151,10 @@ static NativeResult NativeHandle_cholesky(id<MTLDevice> device, id<MTLCommandBuf
             // Zero out the upper (or lower) triangle
             for (int64_t i = 0; i < n; i++)
                 for (int64_t j = 0; j < n; j++) {
-                    if (lower && j > i) data[i * n + j] = {0, 0};
-                    if (!lower && j < i) data[i * n + j] = {0, 0};
+                    if (lower && j > i)
+                        data[i * n + j] = {0, 0};
+                    if (!lower && j < i)
+                        data[i * n + j] = {0, 0};
                 }
         }
 
@@ -586,8 +588,7 @@ REGISTER_NATIVE_MPS_OP("stablehlo.triangular_solve", NativeHandle_triangular_sol
 // Output 1: tensor<...xmin(M,N)xf32> (tau values)
 
 static NativeResult NativeHandle_Qr(id<MTLDevice> device, id<MTLCommandBuffer> cmdBuf,
-                                     mlir::Operation* op,
-                                     const std::vector<id<MTLBuffer>>& inputs) {
+                                    mlir::Operation* op, const std::vector<id<MTLBuffer>>& inputs) {
     if (inputs.empty())
         return NativeResult::Error("Qr: missing input");
 
@@ -694,8 +695,7 @@ static NativeResult NativeHandle_Qr(id<MTLDevice> device, id<MTLCommandBuffer> c
 }
 
 // Register Qr as a NATIVE custom call target
-static bool _cc_reg_Qr =
-    CustomCallRegistry::Register("Qr", OpHandler::Native(NativeHandle_Qr));
+static bool _cc_reg_Qr = CustomCallRegistry::Register("Qr", OpHandler::Native(NativeHandle_Qr));
 
 // ---------------------------------------------------------------------------
 // ProductOfElementaryHouseholderReflectors via Accelerate LAPACK (sorgqr_)
@@ -706,9 +706,9 @@ static bool _cc_reg_Qr =
 // Output: tensor<...xMxNxf32> (Q matrix)
 
 static NativeResult NativeHandle_HouseholderProduct(id<MTLDevice> device,
-                                                     id<MTLCommandBuffer> cmdBuf,
-                                                     mlir::Operation* op,
-                                                     const std::vector<id<MTLBuffer>>& inputs) {
+                                                    id<MTLCommandBuffer> cmdBuf,
+                                                    mlir::Operation* op,
+                                                    const std::vector<id<MTLBuffer>>& inputs) {
     if (inputs.size() < 2)
         return NativeResult::Error("HouseholderProduct: need 2 inputs");
 
@@ -769,12 +769,12 @@ static NativeResult NativeHandle_HouseholderProduct(id<MTLDevice> device,
             __CLPK_integer lwork = -1;
 
             std::complex<float> work_query;
-            cungqr_(&lm, &ln, &lk, (__CLPK_complex*)temp.data(), &lda,
-                    (__CLPK_complex*)tau.data(), (__CLPK_complex*)&work_query, &lwork, &info);
+            cungqr_(&lm, &ln, &lk, (__CLPK_complex*)temp.data(), &lda, (__CLPK_complex*)tau.data(),
+                    (__CLPK_complex*)&work_query, &lwork, &info);
             lwork = (__CLPK_integer)work_query.real();
             std::vector<std::complex<float>> work(lwork);
-            cungqr_(&lm, &ln, &lk, (__CLPK_complex*)temp.data(), &lda,
-                    (__CLPK_complex*)tau.data(), (__CLPK_complex*)work.data(), &lwork, &info);
+            cungqr_(&lm, &ln, &lk, (__CLPK_complex*)temp.data(), &lda, (__CLPK_complex*)tau.data(),
+                    (__CLPK_complex*)work.data(), &lwork, &info);
             if (info != 0)
                 return NativeResult::Error("HouseholderProduct: cungqr failed with info=" +
                                            std::to_string(info));
@@ -823,8 +823,7 @@ static NativeResult NativeHandle_HouseholderProduct(id<MTLDevice> device,
 }
 
 static bool _cc_reg_HouseholderProduct = CustomCallRegistry::Register(
-    "ProductOfElementaryHouseholderReflectors",
-    OpHandler::Native(NativeHandle_HouseholderProduct));
+    "ProductOfElementaryHouseholderReflectors", OpHandler::Native(NativeHandle_HouseholderProduct));
 
 // ---------------------------------------------------------------------------
 // Symmetric eigendecomposition via Accelerate LAPACK (ssyevd_)
@@ -835,8 +834,8 @@ static bool _cc_reg_HouseholderProduct = CustomCallRegistry::Register(
 // Output 1: tensor<...xNxf32> (eigenvalues)
 
 static NativeResult NativeHandle_Syevd(id<MTLDevice> device, id<MTLCommandBuffer> cmdBuf,
-                                        mlir::Operation* op,
-                                        const std::vector<id<MTLBuffer>>& inputs) {
+                                       mlir::Operation* op,
+                                       const std::vector<id<MTLBuffer>>& inputs) {
     if (inputs.empty())
         return NativeResult::Error("Syevd: missing input");
 
@@ -894,8 +893,8 @@ static NativeResult NativeHandle_Syevd(id<MTLDevice> device, id<MTLCommandBuffer
             float rwork_query;
             __CLPK_integer iwork_query;
             cheevd_(&jobz, &uplo, &ln, (__CLPK_complex*)temp.data(), &lda, w,
-                    (__CLPK_complex*)&work_query, &lwork, &rwork_query, &lrwork,
-                    &iwork_query, &liwork, &info);
+                    (__CLPK_complex*)&work_query, &lwork, &rwork_query, &lrwork, &iwork_query,
+                    &liwork, &info);
             lwork = (__CLPK_integer)work_query.real();
             lrwork = (__CLPK_integer)rwork_query;
             liwork = iwork_query;
@@ -904,10 +903,11 @@ static NativeResult NativeHandle_Syevd(id<MTLDevice> device, id<MTLCommandBuffer
             std::vector<__CLPK_integer> iwork(liwork);
 
             cheevd_(&jobz, &uplo, &ln, (__CLPK_complex*)temp.data(), &lda, w,
-                    (__CLPK_complex*)work.data(), &lwork, rwork.data(), &lrwork,
-                    iwork.data(), &liwork, &info);
+                    (__CLPK_complex*)work.data(), &lwork, rwork.data(), &lrwork, iwork.data(),
+                    &liwork, &info);
             if (info != 0)
-                return NativeResult::Error("Syevd: cheevd failed with info=" + std::to_string(info));
+                return NativeResult::Error("Syevd: cheevd failed with info=" +
+                                           std::to_string(info));
 
             for (int64_t i = 0; i < n; i++)
                 for (int64_t j = 0; j < n; j++)
@@ -933,17 +933,18 @@ static NativeResult NativeHandle_Syevd(id<MTLDevice> device, id<MTLCommandBuffer
 
             float work_query;
             __CLPK_integer iwork_query;
-            ssyevd_(&jobz, &uplo, &ln, temp.data(), &lda, w, &work_query, &lwork,
-                    &iwork_query, &liwork, &info);
+            ssyevd_(&jobz, &uplo, &ln, temp.data(), &lda, w, &work_query, &lwork, &iwork_query,
+                    &liwork, &info);
             lwork = (__CLPK_integer)work_query;
             liwork = iwork_query;
             std::vector<float> work(lwork);
             std::vector<__CLPK_integer> iwork(liwork);
 
-            ssyevd_(&jobz, &uplo, &ln, temp.data(), &lda, w, work.data(), &lwork,
-                    iwork.data(), &liwork, &info);
+            ssyevd_(&jobz, &uplo, &ln, temp.data(), &lda, w, work.data(), &lwork, iwork.data(),
+                    &liwork, &info);
             if (info != 0)
-                return NativeResult::Error("Syevd: ssyevd failed with info=" + std::to_string(info));
+                return NativeResult::Error("Syevd: ssyevd failed with info=" +
+                                           std::to_string(info));
 
             for (int64_t i = 0; i < n; i++)
                 for (int64_t j = 0; j < n; j++)
@@ -967,8 +968,8 @@ static bool _cc_reg_Syevd =
 // Output 2: tensor<...xKxNxf32> or tensor<...xNxNxf32> (Vt matrix)
 
 static NativeResult NativeHandle_Sgesdd(id<MTLDevice> device, id<MTLCommandBuffer> cmdBuf,
-                                         mlir::Operation* op,
-                                         const std::vector<id<MTLBuffer>>& inputs) {
+                                        mlir::Operation* op,
+                                        const std::vector<id<MTLBuffer>>& inputs) {
     if (inputs.empty())
         return NativeResult::Error("Sgesdd: missing input");
 
@@ -1015,11 +1016,11 @@ static NativeResult NativeHandle_Sgesdd(id<MTLDevice> device, id<MTLCommandBuffe
     size_t vtSize = (size_t)(vtRows * vtCols) * elemSize;
 
     id<MTLBuffer> outS = [device newBufferWithLength:(size_t)batchSize * sSize
-                                              options:MTLResourceStorageModeShared];
+                                             options:MTLResourceStorageModeShared];
     id<MTLBuffer> outU = [device newBufferWithLength:(size_t)batchSize * uSize
-                                              options:MTLResourceStorageModeShared];
+                                             options:MTLResourceStorageModeShared];
     id<MTLBuffer> outVt = [device newBufferWithLength:(size_t)batchSize * vtSize
-                                               options:MTLResourceStorageModeShared];
+                                              options:MTLResourceStorageModeShared];
 
     for (int64_t b = 0; b < batchSize; b++) {
         float* s = (float*)outS.contents + b * k;
@@ -1059,8 +1060,7 @@ static NativeResult NativeHandle_Sgesdd(id<MTLDevice> device, id<MTLCommandBuffe
             float rwork_query;
             __CLPK_integer lrwork = -1;
             cgesdd_(&jobz, &lm, &ln, (__CLPK_complex*)aCm.data(), &lda, s,
-                    (__CLPK_complex*)uCm.data(), &ldu,
-                    (__CLPK_complex*)vtCm.data(), &ldvt,
+                    (__CLPK_complex*)uCm.data(), &ldu, (__CLPK_complex*)vtCm.data(), &ldvt,
                     &work_query, &lwork, &rwork_query, iwork.data(), &info);
             lwork = (__CLPK_integer)work_query.r;
             std::vector<__CLPK_complex> work(lwork);
@@ -1079,8 +1079,7 @@ static NativeResult NativeHandle_Sgesdd(id<MTLDevice> device, id<MTLCommandBuffe
 
             // Compute complex SVD
             cgesdd_(&jobz, &lm, &ln, (__CLPK_complex*)aCm.data(), &lda, s,
-                    (__CLPK_complex*)uCm.data(), &ldu,
-                    (__CLPK_complex*)vtCm.data(), &ldvt,
+                    (__CLPK_complex*)uCm.data(), &ldu, (__CLPK_complex*)vtCm.data(), &ldvt,
                     work.data(), &lwork, rwork.data(), iwork.data(), &info);
             if (info != 0)
                 return NativeResult::Error("Sgesdd: cgesdd failed with info=" +
@@ -1116,14 +1115,14 @@ static NativeResult NativeHandle_Sgesdd(id<MTLDevice> device, id<MTLCommandBuffe
             // Query optimal workspace
             float work_query;
             __CLPK_integer iwork_buf[8 * std::min(m, n)];
-            sgesdd_(&jobz, &lm, &ln, aCm.data(), &lda, s, uCm.data(), &ldu,
-                    vtCm.data(), &ldvt, &work_query, &lwork, iwork_buf, &info);
+            sgesdd_(&jobz, &lm, &ln, aCm.data(), &lda, s, uCm.data(), &ldu, vtCm.data(), &ldvt,
+                    &work_query, &lwork, iwork_buf, &info);
             lwork = (__CLPK_integer)work_query;
             std::vector<float> work(lwork);
 
             // Compute SVD
-            sgesdd_(&jobz, &lm, &ln, aCm.data(), &lda, s, uCm.data(), &ldu,
-                    vtCm.data(), &ldvt, work.data(), &lwork, iwork.data(), &info);
+            sgesdd_(&jobz, &lm, &ln, aCm.data(), &lda, s, uCm.data(), &ldu, vtCm.data(), &ldvt,
+                    work.data(), &lwork, iwork.data(), &info);
             if (info != 0)
                 return NativeResult::Error("Sgesdd: sgesdd failed with info=" +
                                            std::to_string(info));
@@ -1158,8 +1157,8 @@ static bool _cc_reg_Sgesdd =
 // Output 3: tensor<i32> (info)
 
 static NativeResult NativeHandle_Sgeev(id<MTLDevice> device, id<MTLCommandBuffer> cmdBuf,
-                                        mlir::Operation* op,
-                                        const std::vector<id<MTLBuffer>>& inputs) {
+                                       mlir::Operation* op,
+                                       const std::vector<id<MTLBuffer>>& inputs) {
     if (inputs.empty())
         return NativeResult::Error("Sgeev: missing input");
 
@@ -1209,7 +1208,7 @@ static NativeResult NativeHandle_Sgeev(id<MTLDevice> device, id<MTLCommandBuffer
     id<MTLBuffer> outVr = [device newBufferWithLength:totalComplexMatrixSize
                                               options:MTLResourceStorageModeShared];
     id<MTLBuffer> outInfo = [device newBufferWithLength:sizeof(int32_t)
-                                               options:MTLResourceStorageModeShared];
+                                                options:MTLResourceStorageModeShared];
 
     int32_t globalInfo = 0;
 
@@ -1242,16 +1241,14 @@ static NativeResult NativeHandle_Sgeev(id<MTLDevice> device, id<MTLCommandBuffer
 
             // Query workspace
             __CLPK_complex work_query;
-            cgeev_(&jobvl, &jobvr, &ln, (__CLPK_complex*)aCm.data(), &lda,
-                   w.data(), vl.data(), &ldvl, vr.data(), &ldvr,
-                   &work_query, &lwork, rwork.data(), &info);
+            cgeev_(&jobvl, &jobvr, &ln, (__CLPK_complex*)aCm.data(), &lda, w.data(), vl.data(),
+                   &ldvl, vr.data(), &ldvr, &work_query, &lwork, rwork.data(), &info);
             lwork = (__CLPK_integer)work_query.r;
             std::vector<__CLPK_complex> work(lwork);
 
             // Compute
-            cgeev_(&jobvl, &jobvr, &ln, (__CLPK_complex*)aCm.data(), &lda,
-                   w.data(), vl.data(), &ldvl, vr.data(), &ldvr,
-                   work.data(), &lwork, rwork.data(), &info);
+            cgeev_(&jobvl, &jobvr, &ln, (__CLPK_complex*)aCm.data(), &lda, w.data(), vl.data(),
+                   &ldvl, vr.data(), &ldvr, work.data(), &lwork, rwork.data(), &info);
 
             if (info != 0) {
                 globalInfo = (int32_t)info;
@@ -1299,16 +1296,14 @@ static NativeResult NativeHandle_Sgeev(id<MTLDevice> device, id<MTLCommandBuffer
 
             // Query workspace
             float work_query;
-            sgeev_(&jobvl, &jobvr, &ln, a.data(), &lda, wr.data(), wi.data(),
-                   vl_real.data(), &ldvl, vr_real.data(), &ldvr,
-                   &work_query, &lwork, &info);
+            sgeev_(&jobvl, &jobvr, &ln, a.data(), &lda, wr.data(), wi.data(), vl_real.data(), &ldvl,
+                   vr_real.data(), &ldvr, &work_query, &lwork, &info);
             lwork = (__CLPK_integer)work_query;
             std::vector<float> work(lwork);
 
             // Compute eigendecomposition
-            sgeev_(&jobvl, &jobvr, &ln, a.data(), &lda, wr.data(), wi.data(),
-                   vl_real.data(), &ldvl, vr_real.data(), &ldvr,
-                   work.data(), &lwork, &info);
+            sgeev_(&jobvl, &jobvr, &ln, a.data(), &lda, wr.data(), wi.data(), vl_real.data(), &ldvl,
+                   vr_real.data(), &ldvr, work.data(), &lwork, &info);
 
             if (info != 0) {
                 globalInfo = (int32_t)info;
@@ -1372,8 +1367,8 @@ static bool _cc_reg_Sgeev =
 // Output 1: tensor<...xNxNx(same)> (Q - Schur vectors, if compute_schur_vectors)
 
 static NativeResult NativeHandle_Sgees(id<MTLDevice> device, id<MTLCommandBuffer> cmdBuf,
-                                        mlir::Operation* op,
-                                        const std::vector<id<MTLBuffer>>& inputs) {
+                                       mlir::Operation* op,
+                                       const std::vector<id<MTLBuffer>>& inputs) {
     if (inputs.empty())
         return NativeResult::Error("Sgees: missing input");
 
@@ -1409,10 +1404,10 @@ static NativeResult NativeHandle_Sgees(id<MTLDevice> device, id<MTLCommandBuffer
 
     // Output: T (Schur form)
     id<MTLBuffer> outT = [device newBufferWithLength:(size_t)batchSize * matSize
-                                              options:MTLResourceStorageModeShared];
+                                             options:MTLResourceStorageModeShared];
     // Output: Q (Schur vectors) - always allocated even if not computed
     id<MTLBuffer> outQ = [device newBufferWithLength:(size_t)batchSize * matSize
-                                              options:MTLResourceStorageModeShared];
+                                             options:MTLResourceStorageModeShared];
 
     for (int64_t b = 0; b < batchSize; b++) {
         char jobvs = computeVectors ? 'V' : 'N';
@@ -1440,20 +1435,17 @@ static NativeResult NativeHandle_Sgees(id<MTLDevice> device, id<MTLCommandBuffer
 
             // Query workspace
             __CLPK_complex work_query;
-            cgees_(&jobvs, &sort, nullptr, &ln, (__CLPK_complex*)aCm.data(), &ln,
-                   &sdim, w.data(), vs.data(), &ldvs, &work_query, &lwork,
-                   rwork.data(), nullptr, &info);
+            cgees_(&jobvs, &sort, nullptr, &ln, (__CLPK_complex*)aCm.data(), &ln, &sdim, w.data(),
+                   vs.data(), &ldvs, &work_query, &lwork, rwork.data(), nullptr, &info);
             lwork = (__CLPK_integer)work_query.r;
             std::vector<__CLPK_complex> work(lwork);
 
             // Compute Schur decomposition
-            cgees_(&jobvs, &sort, nullptr, &ln, (__CLPK_complex*)aCm.data(), &ln,
-                   &sdim, w.data(), vs.data(), &ldvs, work.data(), &lwork,
-                   rwork.data(), nullptr, &info);
+            cgees_(&jobvs, &sort, nullptr, &ln, (__CLPK_complex*)aCm.data(), &ln, &sdim, w.data(),
+                   vs.data(), &ldvs, work.data(), &lwork, rwork.data(), nullptr, &info);
 
             if (info != 0)
-                return NativeResult::Error("Sgees: cgees failed with info=" +
-                                           std::to_string(info));
+                return NativeResult::Error("Sgees: cgees failed with info=" + std::to_string(info));
 
             // Transpose T (in aCm after cgees_) from column-major to row-major
             float* tOut = (float*)outT.contents + b * n * n * 2;
@@ -1486,20 +1478,17 @@ static NativeResult NativeHandle_Sgees(id<MTLDevice> device, id<MTLCommandBuffer
 
             // Query workspace
             float work_query;
-            sgees_(&jobvs, &sort, nullptr, &ln, aCm.data(), &ln,
-                   &sdim, wr.data(), wi.data(), vs.data(), &ldvs,
-                   &work_query, &lwork, nullptr, &info);
+            sgees_(&jobvs, &sort, nullptr, &ln, aCm.data(), &ln, &sdim, wr.data(), wi.data(),
+                   vs.data(), &ldvs, &work_query, &lwork, nullptr, &info);
             lwork = (__CLPK_integer)work_query;
             std::vector<float> work(lwork);
 
             // Compute Schur decomposition
-            sgees_(&jobvs, &sort, nullptr, &ln, aCm.data(), &ln,
-                   &sdim, wr.data(), wi.data(), vs.data(), &ldvs,
-                   work.data(), &lwork, nullptr, &info);
+            sgees_(&jobvs, &sort, nullptr, &ln, aCm.data(), &ln, &sdim, wr.data(), wi.data(),
+                   vs.data(), &ldvs, work.data(), &lwork, nullptr, &info);
 
             if (info != 0)
-                return NativeResult::Error("Sgees: sgees failed with info=" +
-                                           std::to_string(info));
+                return NativeResult::Error("Sgees: sgees failed with info=" + std::to_string(info));
 
             // Transpose T from column-major to row-major
             float* tOut = (float*)outT.contents + b * n * n;

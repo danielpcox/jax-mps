@@ -318,17 +318,27 @@ static ProcessResult HandleDotGeneral(HandlerContext& ctx) {
         lhsBatchDims.empty() && rhsBatchDims.empty()) {
         // Build LHS shape: lhs_shape + (1,)*rhsRank
         NSMutableArray<NSNumber*>* lhsBroadcastShape = [NSMutableArray array];
-        for (NSNumber* d in lhsShape) [lhsBroadcastShape addObject:d];
-        for (NSUInteger i = 0; i < rhsRank; ++i) [lhsBroadcastShape addObject:@1];
+        for (NSNumber* d in lhsShape)
+            [lhsBroadcastShape addObject:d];
+        for (NSUInteger i = 0; i < rhsRank; ++i)
+            [lhsBroadcastShape addObject:@1];
 
         // Build RHS shape: (1,)*lhsRank + rhs_shape
         NSMutableArray<NSNumber*>* rhsBroadcastShape = [NSMutableArray array];
-        for (NSUInteger i = 0; i < lhsRank; ++i) [rhsBroadcastShape addObject:@1];
-        for (NSNumber* d in rhsShape) [rhsBroadcastShape addObject:d];
+        for (NSUInteger i = 0; i < lhsRank; ++i)
+            [rhsBroadcastShape addObject:@1];
+        for (NSNumber* d in rhsShape)
+            [rhsBroadcastShape addObject:d];
 
-        MPSGraphTensor* lhsReshaped = [ctx.graph reshapeTensor:lhs withShape:lhsBroadcastShape name:nil];
-        MPSGraphTensor* rhsReshaped = [ctx.graph reshapeTensor:rhs withShape:rhsBroadcastShape name:nil];
-        result = [ctx.graph multiplicationWithPrimaryTensor:lhsReshaped secondaryTensor:rhsReshaped name:nil];
+        MPSGraphTensor* lhsReshaped = [ctx.graph reshapeTensor:lhs
+                                                     withShape:lhsBroadcastShape
+                                                          name:nil];
+        MPSGraphTensor* rhsReshaped = [ctx.graph reshapeTensor:rhs
+                                                     withShape:rhsBroadcastShape
+                                                          name:nil];
+        result = [ctx.graph multiplicationWithPrimaryTensor:lhsReshaped
+                                            secondaryTensor:rhsReshaped
+                                                       name:nil];
     }
 
     // General fallback: handles any dot_general with arbitrary batch, contracting,
@@ -339,9 +349,9 @@ static ProcessResult HandleDotGeneral(HandlerContext& ctx) {
         llvm::SmallDenseSet<int64_t, 4> lhsBatchSet(lhsBatchDims.begin(), lhsBatchDims.end());
         llvm::SmallDenseSet<int64_t, 4> rhsBatchSet(rhsBatchDims.begin(), rhsBatchDims.end());
         llvm::SmallDenseSet<int64_t, 4> lhsContractSet(lhsContractingDims.begin(),
-                                                         lhsContractingDims.end());
+                                                       lhsContractingDims.end());
         llvm::SmallDenseSet<int64_t, 4> rhsContractSet(rhsContractingDims.begin(),
-                                                         rhsContractingDims.end());
+                                                       rhsContractingDims.end());
 
         // Verify contracting dim sizes match
         bool contractSizesMatch = (lhsContractingDims.size() == rhsContractingDims.size());
@@ -387,12 +397,14 @@ static ProcessResult HandleDotGeneral(HandlerContext& ctx) {
 
             // Transpose LHS to [batch, free, contract]
             NSMutableArray<NSNumber*>* lhsPerm = [NSMutableArray array];
-            for (auto bd : lhsBatchDims) [lhsPerm addObject:@(bd)];
+            for (auto bd : lhsBatchDims)
+                [lhsPerm addObject:@(bd)];
             for (NSUInteger d = 0; d < lhsRank; ++d) {
                 if (!lhsBatchSet.count(d) && !lhsContractSet.count(d))
                     [lhsPerm addObject:@(d)];
             }
-            for (auto cd : lhsContractingDims) [lhsPerm addObject:@(cd)];
+            for (auto cd : lhsContractingDims)
+                [lhsPerm addObject:@(cd)];
 
             MPSGraphTensor* lhsT = lhs;
             if (!IsIdentityPerm(lhsPerm, lhsRank)) {
@@ -401,8 +413,10 @@ static ProcessResult HandleDotGeneral(HandlerContext& ctx) {
 
             // Transpose RHS to [batch, contract, free]
             NSMutableArray<NSNumber*>* rhsPerm = [NSMutableArray array];
-            for (auto bd : rhsBatchDims) [rhsPerm addObject:@(bd)];
-            for (auto cd : rhsContractingDims) [rhsPerm addObject:@(cd)];
+            for (auto bd : rhsBatchDims)
+                [rhsPerm addObject:@(bd)];
+            for (auto cd : rhsContractingDims)
+                [rhsPerm addObject:@(cd)];
             for (NSUInteger d = 0; d < rhsRank; ++d) {
                 if (!rhsBatchSet.count(d) && !rhsContractSet.count(d))
                     [rhsPerm addObject:@(d)];
@@ -415,12 +429,14 @@ static ProcessResult HandleDotGeneral(HandlerContext& ctx) {
 
             // Reshape to 3D: [B, M, K] × [B, K, N]
             // When no batch dims, batchProduct is 1 (initialized value).
-            lhsT = [ctx.graph reshapeTensor:lhsT
-                                   withShape:@[@(batchProduct), @(lhsFreeProduct), @(contractProduct)]
-                                        name:nil];
-            rhsT = [ctx.graph reshapeTensor:rhsT
-                                   withShape:@[@(batchProduct), @(contractProduct), @(rhsFreeProduct)]
-                                        name:nil];
+            lhsT =
+                [ctx.graph reshapeTensor:lhsT
+                               withShape:@[@(batchProduct), @(lhsFreeProduct), @(contractProduct)]
+                                    name:nil];
+            rhsT =
+                [ctx.graph reshapeTensor:rhsT
+                               withShape:@[@(batchProduct), @(contractProduct), @(rhsFreeProduct)]
+                                    name:nil];
 
             result = [ctx.graph matrixMultiplicationWithPrimaryTensor:lhsT
                                                       secondaryTensor:rhsT
@@ -428,9 +444,12 @@ static ProcessResult HandleDotGeneral(HandlerContext& ctx) {
 
             // Reshape to output: [batch..., lhs_free..., rhs_free...]
             NSMutableArray<NSNumber*>* outputShape = [NSMutableArray array];
-            for (int64_t s : batchSizes) [outputShape addObject:@(s)];
-            for (int64_t s : lhsFreeSizes) [outputShape addObject:@(s)];
-            for (int64_t s : rhsFreeSizes) [outputShape addObject:@(s)];
+            for (int64_t s : batchSizes)
+                [outputShape addObject:@(s)];
+            for (int64_t s : lhsFreeSizes)
+                [outputShape addObject:@(s)];
+            for (int64_t s : rhsFreeSizes)
+                [outputShape addObject:@(s)];
             result = [ctx.graph reshapeTensor:result withShape:outputShape name:nil];
         }
     }
@@ -442,9 +461,9 @@ static ProcessResult HandleDotGeneral(HandlerContext& ctx) {
     }
 
     if (!result) {
-        return ProcessResult::Error(
-            "dot_general: unsupported dimension configuration (LHS rank " +
-            std::to_string(lhsRank) + ", RHS rank " + std::to_string(rhsRank) + ")");
+        return ProcessResult::Error("dot_general: unsupported dimension configuration (LHS rank " +
+                                    std::to_string(lhsRank) + ", RHS rank " +
+                                    std::to_string(rhsRank) + ")");
     }
 
     // Cast back from float32 to the original integer output type

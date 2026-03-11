@@ -132,7 +132,8 @@ static bool IsZeroSizedType(mlir::Type type) {
     if (!tensorType)
         return false;
     for (int64_t dim : tensorType.getShape()) {
-        if (dim == 0) return true;
+        if (dim == 0)
+            return true;
     }
     return false;
 }
@@ -275,7 +276,8 @@ static ProcessResult processOperations(HandlerContext& ctx, mlir::Block& block) 
                     for (unsigned i = 0; i < op->getNumOperands(); i++) {
                         if (!IsZeroSizedType(op->getOperand(i).getType())) {
                             MPSGraphTensor* t = GetTensor(ctx.values, op->getOperand(i));
-                            if (t) [nonZeroInputs addObject:t];
+                            if (t)
+                                [nonZeroInputs addObject:t];
                         }
                     }
                     MPSGraphTensor* concatResult = nil;
@@ -301,10 +303,9 @@ static ProcessResult processOperations(HandlerContext& ctx, mlir::Block& block) 
                                 GetTensor(ctx.values, padOp.getPaddingValue());
                             if (padValue) {
                                 NSArray<NSNumber*>* outputShape = GetOutputShape(op);
-                                MPSGraphTensor* result =
-                                    [ctx.graph broadcastTensor:padValue
-                                                      toShape:outputShape
-                                                         name:nil];
+                                MPSGraphTensor* result = [ctx.graph broadcastTensor:padValue
+                                                                            toShape:outputShape
+                                                                               name:nil];
                                 SetOutputTensor(ctx.values, op, result);
                                 handled = true;
                             }
@@ -328,8 +329,8 @@ static ProcessResult processOperations(HandlerContext& ctx, mlir::Block& block) 
                                 NSArray<NSNumber*>* outShape = GetOutputShape(op, r);
                                 if (outShape) {
                                     initVal = [ctx.graph broadcastTensor:initVal
-                                                                toShape:outShape
-                                                                   name:nil];
+                                                                 toShape:outShape
+                                                                    name:nil];
                                 }
                             }
                             ctx.values[op->getResult(r).getAsOpaquePointer()] = initVal;
@@ -366,7 +367,7 @@ static ProcessResult processOperations(HandlerContext& ctx, mlir::Block& block) 
             continue;
         }
 
-        normal_handler:
+    normal_handler:
 
         // Look up handler in registry
         const OpHandler* handler = FindHandler(op);
@@ -388,8 +389,7 @@ static ProcessResult processOperations(HandlerContext& ctx, mlir::Block& block) 
                     return ProcessResult::Error(
                         "triangular_solve (graph fallback): missing input tensors");
                 }
-                auto triSolveOp =
-                    mlir::dyn_cast<mlir::stablehlo::TriangularSolveOp>(op);
+                auto triSolveOp = mlir::dyn_cast<mlir::stablehlo::TriangularSolveOp>(op);
                 bool leftSide = triSolveOp ? triSolveOp.getLeftSide() : true;
                 bool lower = triSolveOp ? triSolveOp.getLower() : true;
                 bool unitDiagonal = triSolveOp ? triSolveOp.getUnitDiagonal() : false;
@@ -404,15 +404,9 @@ static ProcessResult processOperations(HandlerContext& ctx, mlir::Block& block) 
                 //   lower=false: numLower=0,  numUpper=-1 (upper triangle)
                 MPSGraphTensor* tri;
                 if (lower) {
-                    tri = [ctx.graph bandPartWithTensor:A
-                                              numLower:-1
-                                              numUpper:0
-                                                  name:nil];
+                    tri = [ctx.graph bandPartWithTensor:A numLower:-1 numUpper:0 name:nil];
                 } else {
-                    tri = [ctx.graph bandPartWithTensor:A
-                                              numLower:0
-                                              numUpper:-1
-                                                  name:nil];
+                    tri = [ctx.graph bandPartWithTensor:A numLower:0 numUpper:-1 name:nil];
                 }
 
                 // Handle unit diagonal: set diagonal to 1
@@ -425,38 +419,41 @@ static ProcessResult processOperations(HandlerContext& ctx, mlir::Block& block) 
                                                                dataType:tri.dataType];
                     // Create identity: only diagonal elements are 1
                     MPSGraphTensor* identity = [ctx.graph bandPartWithTensor:eye
-                                                                   numLower:0
-                                                                   numUpper:0
-                                                                       name:nil];
+                                                                    numLower:0
+                                                                    numUpper:0
+                                                                        name:nil];
                     // Zero out existing diagonal and add identity
-                    MPSGraphTensor* offDiag = [ctx.graph subtractionWithPrimaryTensor:tri
-                                                                     secondaryTensor:[ctx.graph bandPartWithTensor:tri numLower:0 numUpper:0 name:nil]
-                                                                                name:nil];
+                    MPSGraphTensor* offDiag =
+                        [ctx.graph subtractionWithPrimaryTensor:tri
+                                                secondaryTensor:[ctx.graph bandPartWithTensor:tri
+                                                                                     numLower:0
+                                                                                     numUpper:0
+                                                                                         name:nil]
+                                                           name:nil];
                     tri = [ctx.graph additionWithPrimaryTensor:offDiag
-                                              secondaryTensor:identity
-                                                         name:nil];
+                                               secondaryTensor:identity
+                                                          name:nil];
                 }
 
                 // Handle transpose
                 if (transpose) {
                     tri = [ctx.graph transposeTensor:tri
-                                          dimension:tri.shape.count - 2
-                                      withDimension:tri.shape.count - 1
-                                               name:nil];
+                                           dimension:tri.shape.count - 2
+                                       withDimension:tri.shape.count - 1
+                                                name:nil];
                 }
 
                 // Compute inv(tri) @ B
-                MPSGraphTensor* tri_inv =
-                    [ctx.graph inverseOfTensor:tri name:nil];
+                MPSGraphTensor* tri_inv = [ctx.graph inverseOfTensor:tri name:nil];
                 MPSGraphTensor* result;
                 if (leftSide) {
                     result = [ctx.graph matrixMultiplicationWithPrimaryTensor:tri_inv
-                                                            secondaryTensor:B
-                                                                       name:nil];
+                                                              secondaryTensor:B
+                                                                         name:nil];
                 } else {
                     result = [ctx.graph matrixMultiplicationWithPrimaryTensor:B
-                                                            secondaryTensor:tri_inv
-                                                                       name:nil];
+                                                              secondaryTensor:tri_inv
+                                                                         name:nil];
                 }
                 ctx.values[op->getResult(0).getAsOpaquePointer()] = result;
                 continue;
@@ -509,7 +506,8 @@ bool MpsExecutable::BuildExecutionPlan() {
             auto shouldInlineCallee = [&](mlir::func::FuncOp callee) -> bool {
                 bool result = false;
                 callee.walk([&](mlir::Operation* inner) {
-                    if (result) return;
+                    if (result)
+                        return;
                     std::string inner_name = inner->getName().getStringRef().str();
                     const OpHandler* h = OpRegistry::Find(inner_name);
                     if (h && h->is_native()) {
@@ -527,8 +525,7 @@ bool MpsExecutable::BuildExecutionPlan() {
                 return result;
             };
 
-            auto inlineCallOp = [&](mlir::func::CallOp callOp,
-                                    mlir::func::FuncOp callee) {
+            auto inlineCallOp = [&](mlir::func::CallOp callOp, mlir::func::FuncOp callee) {
                 mlir::Block& calleeBlock = callee.front();
                 mlir::IRMapping mapping;
                 for (unsigned i = 0; i < calleeBlock.getNumArguments(); i++) {
@@ -561,12 +558,12 @@ bool MpsExecutable::BuildExecutionPlan() {
                 mlir::func::FuncOp foundCallee = nullptr;
 
                 entry_func_.walk([&](mlir::func::CallOp callOp) {
-                    if (foundCall) return;
+                    if (foundCall)
+                        return;
                     MPS_LOG_DEBUG("BuildExecutionPlan: found call to %s\n",
                                   callOp.getCallee().str().c_str());
 
-                    auto callee = module_->lookupSymbol<mlir::func::FuncOp>(
-                        callOp.getCallee());
+                    auto callee = module_->lookupSymbol<mlir::func::FuncOp>(callOp.getCallee());
                     if (!callee || callee.empty())
                         return;
 
@@ -877,7 +874,8 @@ bool MpsExecutable::BuildExecutionPlan() {
                         operand.getType().print(os);
                         error_ = "MPS does not support dtype in tensor type " + type_str +
                                  ". Metal GPUs only support float32 and narrower types "
-                                 "(float16, bfloat16). Use jax.config.update('jax_default_dtype_float', 'float32') "
+                                 "(float16, bfloat16). Use "
+                                 "jax.config.update('jax_default_dtype_float', 'float32') "
                                  "or avoid enabling x64 mode.";
                         return;
                     }
@@ -941,7 +939,8 @@ bool MpsExecutable::BuildExecutionPlan() {
                                         if (!IsZeroSizedType(op->getOperand(i).getType())) {
                                             MPSGraphTensor* t =
                                                 GetTensor(values, op->getOperand(i));
-                                            if (t) [nonZeroInputs addObject:t];
+                                            if (t)
+                                                [nonZeroInputs addObject:t];
                                         }
                                     }
                                     MPSGraphTensor* concatResult = nil;
@@ -960,8 +959,7 @@ bool MpsExecutable::BuildExecutionPlan() {
 
                                 // pad: zero-sized operand → fill with pad value
                                 if (!handled) {
-                                    if (auto padOp =
-                                            mlir::dyn_cast<mlir::stablehlo::PadOp>(op)) {
+                                    if (auto padOp = mlir::dyn_cast<mlir::stablehlo::PadOp>(op)) {
                                         if (IsZeroSizedType(padOp.getOperand().getType())) {
                                             MPSGraphTensor* padValue =
                                                 GetTensor(values, padOp.getPaddingValue());
@@ -970,8 +968,8 @@ bool MpsExecutable::BuildExecutionPlan() {
                                                     GetOutputShape(op);
                                                 MPSGraphTensor* result =
                                                     [graph broadcastTensor:padValue
-                                                                  toShape:outputShape
-                                                                     name:nil];
+                                                                   toShape:outputShape
+                                                                      name:nil];
                                                 SetOutputTensor(values, op, result);
                                                 handled = true;
                                             }
@@ -991,10 +989,9 @@ bool MpsExecutable::BuildExecutionPlan() {
                                                 NSArray<NSNumber*>* outShape =
                                                     GetOutputShape(op, r);
                                                 if (outShape) {
-                                                    initVal =
-                                                        [graph broadcastTensor:initVal
-                                                                      toShape:outShape
-                                                                         name:nil];
+                                                    initVal = [graph broadcastTensor:initVal
+                                                                             toShape:outShape
+                                                                                name:nil];
                                                 }
                                             }
                                             values[op->getResult(r).getAsOpaquePointer()] = initVal;
@@ -1029,7 +1026,7 @@ bool MpsExecutable::BuildExecutionPlan() {
                             continue;
                         }
 
-                        pass2_normal_handler:
+                    pass2_normal_handler:
 
                         if (auto callOp = mlir::dyn_cast<mlir::func::CallOp>(op)) {
                             HandlerContext callCtx(graph, op, values, *module_, 0,
@@ -1403,8 +1400,9 @@ ExecutionResult MpsExecutable::Execute(const std::vector<MpsBuffer*>& inputs, Mp
                 if (has_zero_output) {
                     for (auto slot : ns.output_slots) {
                         if (!slot_bufs[slot]) {
-                            slot_bufs[slot] = [mtl_device newBufferWithLength:1
-                                                                     options:MTLResourceStorageModeShared];
+                            slot_bufs[slot] =
+                                [mtl_device newBufferWithLength:1
+                                                        options:MTLResourceStorageModeShared];
                             allocated_slots.push_back(slot);
                         }
                     }
@@ -1416,7 +1414,8 @@ ExecutionResult MpsExecutable::Execute(const std::vector<MpsBuffer*>& inputs, Mp
                 // buffer contents on CPU, and harmless for MPS-native handlers.
                 if (!flushCommandBuffer()) {
                     release_intermediates(false);
-                    return ExecutionResult::Error("Failed to flush command buffer before native step");
+                    return ExecutionResult::Error(
+                        "Failed to flush command buffer before native step");
                 }
 
                 std::vector<id<MTLBuffer>> input_bufs;

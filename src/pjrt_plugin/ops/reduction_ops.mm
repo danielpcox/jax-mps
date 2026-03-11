@@ -323,7 +323,8 @@ static ProcessResult HandleCumulativeReduceWindow(HandlerContext& ctx,
 static ProcessResult HandlePoolingReduceWindow(HandlerContext& ctx,
                                                mlir::stablehlo::ReduceWindowOp rwOp,
                                                MPSGraphTensor* input,
-                                               llvm::ArrayRef<int64_t> inputShapeRef, int64_t rank) {
+                                               llvm::ArrayRef<int64_t> inputShapeRef,
+                                               int64_t rank) {
     // Copy to vector so we can reassign for rank > 4 batch merging.
     std::vector<int64_t> inputShape(inputShapeRef.begin(), inputShapeRef.end());
     auto windowDimsRef = rwOp.getWindowDimensions();
@@ -391,8 +392,8 @@ static ProcessResult HandlePoolingReduceWindow(HandlerContext& ctx,
     if (rank > 4) {
         // Find how many leading dims can be merged (window=1, stride=1, no padding)
         for (int64_t i = 0; i < rank - 3; i++) {
-            if (windowDims[i] == 1 && strides[i] == 1 && winDil[i] == 1 &&
-                padLow[i] == 0 && padHigh[i] == 0) {
+            if (windowDims[i] == 1 && strides[i] == 1 && winDil[i] == 1 && padLow[i] == 0 &&
+                padHigh[i] == 0) {
                 mergedBatchSize *= inputShape[i];
                 mergedBatchDims++;
             } else {
@@ -400,10 +401,12 @@ static ProcessResult HandlePoolingReduceWindow(HandlerContext& ctx,
             }
         }
         if (rank - mergedBatchDims > 4) {
-            return ProcessResult::Error("reduce_window: cannot reduce to 4D pooling (too many spatial dims)");
+            return ProcessResult::Error(
+                "reduce_window: cannot reduce to 4D pooling (too many spatial dims)");
         }
         if (mergedBatchDims == 0) {
-            return ProcessResult::Error("reduce_window: rank > 4 pooling requires leading batch dims");
+            return ProcessResult::Error(
+                "reduce_window: rank > 4 pooling requires leading batch dims");
         }
 
         // Rebuild arrays with merged batch dims
@@ -661,8 +664,8 @@ static ProcessResult HandleSelectAndScatter(HandlerContext& ctx) {
     if (!sasOp)
         return ProcessResult::Error("select_and_scatter: expected SelectAndScatterOp");
 
-    MPSGraphTensor* operand = GetInputTensor(ctx, 0);   // original input to forward max pool
-    MPSGraphTensor* source = GetInputTensor(ctx, 1);     // gradient from output
+    MPSGraphTensor* operand = GetInputTensor(ctx, 0);  // original input to forward max pool
+    MPSGraphTensor* source = GetInputTensor(ctx, 1);   // gradient from output
     if (!operand || !source)
         return ProcessResult::Error("select_and_scatter: missing input tensor");
 
@@ -719,8 +722,7 @@ static ProcessResult HandleSelectAndScatter(HandlerContext& ctx) {
 
     if (rank > 4) {
         for (int64_t i = 0; i < rank - 3; i++) {
-            if (windowDims[i] == 1 && strides[i] == 1 &&
-                padLow[i] == 0 && padHigh[i] == 0) {
+            if (windowDims[i] == 1 && strides[i] == 1 && padLow[i] == 0 && padHigh[i] == 0) {
                 mergedBatchSize *= operandShape[i];
                 mergedSourceBatchSize *= sourceShape[i];
                 mergedBatchDims++;
@@ -729,7 +731,8 @@ static ProcessResult HandleSelectAndScatter(HandlerContext& ctx) {
             }
         }
         if (rank - mergedBatchDims > 4)
-            return ProcessResult::Error("select_and_scatter: cannot reduce to 4D (too many spatial dims)");
+            return ProcessResult::Error(
+                "select_and_scatter: cannot reduce to 4D (too many spatial dims)");
         if (mergedBatchDims == 0)
             return ProcessResult::Error("select_and_scatter: rank > 4 requires leading batch dims");
 
@@ -807,12 +810,8 @@ static ProcessResult HandleSelectAndScatter(HandlerContext& ctx) {
     }
 
     // Reshape to 4D
-    MPSGraphTensor* operand4D = [ctx.graph reshapeTensor:operand
-                                               withShape:operandReshape
-                                                    name:nil];
-    MPSGraphTensor* source4D = [ctx.graph reshapeTensor:source
-                                              withShape:sourceReshape
-                                                   name:nil];
+    MPSGraphTensor* operand4D = [ctx.graph reshapeTensor:operand withShape:operandReshape name:nil];
+    MPSGraphTensor* source4D = [ctx.graph reshapeTensor:source withShape:sourceReshape name:nil];
 
     // Create pooling descriptor (same parameters as the forward max pool)
     MPSGraphPooling4DOpDescriptor* desc =
@@ -830,11 +829,10 @@ static ProcessResult HandleSelectAndScatter(HandlerContext& ctx) {
     }
 
     // Use MPS's max pool gradient operation
-    MPSGraphTensor* result4D =
-        [ctx.graph maxPooling4DGradientWithGradientTensor:source4D
-                                            sourceTensor:operand4D
-                                              descriptor:desc
-                                                    name:nil];
+    MPSGraphTensor* result4D = [ctx.graph maxPooling4DGradientWithGradientTensor:source4D
+                                                                    sourceTensor:operand4D
+                                                                      descriptor:desc
+                                                                            name:nil];
 
     if (poolKind == PoolGradKind::kMin) {
         result4D = [ctx.graph negativeWithTensor:result4D name:nil];

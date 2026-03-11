@@ -187,16 +187,15 @@ static ProcessResult HandleDynamicSlice(HandlerContext& ctx) {
         int64_t dimSize = inputShape[dim].longLongValue;
         int64_t sliceSize = sliceSizes[dim];
         int64_t maxStart = dimSize - sliceSize;
-        if (maxStart < 0) maxStart = 0;
+        if (maxStart < 0)
+            maxStart = 0;
 
-        MPSGraphTensor* zero = [ctx.graph constantWithScalar:0
-                                                    dataType:startIdx.dataType];
-        MPSGraphTensor* maxVal = [ctx.graph constantWithScalar:maxStart
-                                                      dataType:startIdx.dataType];
+        MPSGraphTensor* zero = [ctx.graph constantWithScalar:0 dataType:startIdx.dataType];
+        MPSGraphTensor* maxVal = [ctx.graph constantWithScalar:maxStart dataType:startIdx.dataType];
         startIdx = [ctx.graph clampWithTensor:startIdx
-                                 minValueTensor:zero
-                                 maxValueTensor:maxVal
-                                           name:nil];
+                               minValueTensor:zero
+                               maxValueTensor:maxVal
+                                         name:nil];
 
         // Create coordinate tensor for this dimension (0, 1, 2, ..., slice_size-1)
         MPSGraphTensor* coords = [ctx.graph coordinateAlongAxis:(NSInteger)dim
@@ -434,30 +433,28 @@ static ProcessResult HandlePad(HandlerContext& ctx) {
         MPSGraphTensor* mask = ApplyInteriorPadding(ctx.graph, ones, interiorPadding, rank);
         if (needsCrop) {
             mask = [ctx.graph sliceTensor:mask
-                                  starts:cropStarts
-                                    ends:cropEnds
-                                 strides:cropStrides
-                                    name:nil];
+                                   starts:cropStarts
+                                     ends:cropEnds
+                                  strides:cropStrides
+                                     name:nil];
         }
         if (needsPad) {
             mask = [ctx.graph padTensor:mask
-                       withPaddingMode:MPSGraphPaddingModeConstant
-                           leftPadding:leftPad
-                          rightPadding:rightPad
-                         constantValue:0.0
-                                  name:nil];
+                        withPaddingMode:MPSGraphPaddingModeConstant
+                            leftPadding:leftPad
+                           rightPadding:rightPad
+                          constantValue:0.0
+                                   name:nil];
         }
 
-        MPSGraphTensor* invMask = [ctx.graph subtractionWithPrimaryTensor:
-                                    [ctx.graph constantWithScalar:1.0 dataType:mask.dataType]
-                                                        secondaryTensor:mask
-                                                                   name:nil];
+        MPSGraphTensor* invMask = [ctx.graph
+            subtractionWithPrimaryTensor:[ctx.graph constantWithScalar:1.0 dataType:mask.dataType]
+                         secondaryTensor:mask
+                                    name:nil];
         MPSGraphTensor* padFill = [ctx.graph multiplicationWithPrimaryTensor:invMask
-                                                            secondaryTensor:paddingValue
-                                                                       name:nil];
-        current = [ctx.graph additionWithPrimaryTensor:current
-                                      secondaryTensor:padFill
-                                                 name:nil];
+                                                             secondaryTensor:paddingValue
+                                                                        name:nil];
+        current = [ctx.graph additionWithPrimaryTensor:current secondaryTensor:padFill name:nil];
     }
 
     return Result(ctx, current, "pad");
@@ -503,16 +500,15 @@ static ProcessResult HandleDynamicUpdateSlice(HandlerContext& ctx) {
         int64_t dimSize = operandShape[dim].longLongValue;
         int64_t updateSize = updateShape[dim].longLongValue;
         int64_t maxStart = dimSize - updateSize;
-        if (maxStart < 0) maxStart = 0;
+        if (maxStart < 0)
+            maxStart = 0;
 
-        MPSGraphTensor* zero = [ctx.graph constantWithScalar:0
-                                                    dataType:startIdx.dataType];
-        MPSGraphTensor* maxVal = [ctx.graph constantWithScalar:maxStart
-                                                      dataType:startIdx.dataType];
+        MPSGraphTensor* zero = [ctx.graph constantWithScalar:0 dataType:startIdx.dataType];
+        MPSGraphTensor* maxVal = [ctx.graph constantWithScalar:maxStart dataType:startIdx.dataType];
         startIdx = [ctx.graph clampWithTensor:startIdx
-                                 minValueTensor:zero
-                                 maxValueTensor:maxVal
-                                           name:nil];
+                               minValueTensor:zero
+                               maxValueTensor:maxVal
+                                         name:nil];
 
         // Create coordinate tensor for this dimension (0, 1, 2, ..., update_size-1)
         MPSGraphTensor* coords = [ctx.graph coordinateAlongAxis:(NSInteger)dim
@@ -597,8 +593,8 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
             [squeezedShape addObject:indicesShape[i]];
         }
         MPSGraphTensor* squeezedIndices = [ctx.graph reshapeTensor:startIndices
-                                                          withShape:squeezedShape
-                                                               name:nil];
+                                                         withShape:squeezedShape
+                                                              name:nil];
         squeezedIndices = EnsureInt32(ctx.graph, squeezedIndices);
 
         // If slice length > 1, build iota offsets: indices[i] + [0, 1, ..., sliceLen-1]
@@ -811,8 +807,8 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
     // Single-index example: operand [4,16], indices [1], start_index_map=[1], slice_sizes=[4,15]
     // Multi-index example: operand [2,3,3], indices [2], start_index_map=[1,2], slice_sizes=[2,1,1]
     if (operandBatchingDims.empty() && startIndicesBatchingDims.empty() &&
-        collapsedSliceDims.empty() && indexVectorDim == 0 &&
-        indicesRank == 1 && startIndexMap.size() >= 1 &&
+        collapsedSliceDims.empty() && indexVectorDim == 0 && indicesRank == 1 &&
+        startIndexMap.size() >= 1 &&
         (int64_t)[indicesShape[0] integerValue] == (int64_t)startIndexMap.size()) {
         auto sliceSizes = gatherOp.getSliceSizes();
         auto operandType = mlir::cast<mlir::RankedTensorType>(ctx.op->getOperand(0).getType());
@@ -826,10 +822,10 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
 
             // Extract the i-th index from the indices vector
             MPSGraphTensor* startIdx = [ctx.graph sliceTensor:startIndices
-                                                         starts:@[@(i)]
-                                                           ends:@[@(i + 1)]
-                                                        strides:@[@1]
-                                                           name:nil];
+                                                       starts:@[@(i)]
+                                                         ends:@[@(i + 1)]
+                                                      strides:@[@1]
+                                                         name:nil];
             startIdx = EnsureInt32(ctx.graph, startIdx);
             startIdx = [ctx.graph reshapeTensor:startIdx withShape:@[] name:nil];
 
@@ -866,8 +862,6 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
         gathered = [ctx.graph reshapeTensor:gathered withShape:outputShape name:nil];
         return Result(ctx, gathered, "gather");
     }
-
-
 
     // Handle slice-gather pattern (e.g., embedding lookup via vmap):
     // Like multi-index gather but some mapped dims have full-size slices (not collapsed).
@@ -1009,8 +1003,8 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
 
             // Gather with offset dimensions: some dims pass through, others are point-gathered.
             // Strategy: transpose operand so indexed dims come first, then flatten indexed dims,
-            // compute flat indices from multi-dim index coordinates, and gather along the flat axis.
-            // This produces [N, offset_dims...] directly, which we then transpose if needed.
+            // compute flat indices from multi-dim index coordinates, and gather along the flat
+            // axis. This produces [N, offset_dims...] directly, which we then transpose if needed.
 
             // Build permutation: indexed dims first, then offset dims
             llvm::SmallVector<int64_t> perm;
@@ -1040,9 +1034,7 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
                 for (int64_t p : perm) {
                     [permArr addObject:@(p)];
                 }
-                transposed = [ctx.graph transposeTensor:operand
-                                            permutation:permArr
-                                                   name:nil];
+                transposed = [ctx.graph transposeTensor:operand permutation:permArr name:nil];
             }
 
             // Flatten the indexed dimensions into one.
@@ -1110,10 +1102,10 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
                     [stridesArr addObject:@1];
                 }
                 MPSGraphTensor* col = [ctx.graph sliceTensor:indicesInt
-                                                   starts:starts
-                                                     ends:ends
-                                                  strides:stridesArr
-                                                     name:nil];
+                                                      starts:starts
+                                                        ends:ends
+                                                     strides:stridesArr
+                                                        name:nil];
                 // Squeeze the index vector dimension: [N,1] -> [N]
                 NSMutableArray<NSNumber*>* squeezedShape = [NSMutableArray array];
                 for (NSUInteger d = 0; d < indicesRank; ++d) {
@@ -1126,22 +1118,19 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
                 // Clamp each index to [0, dim_size-1] to match CPU per-dim clamping
                 // (otherwise flat index clamping gives different OOB behavior).
                 int64_t dimSize = [operand.shape[(NSUInteger)startIndexMap[i]] integerValue];
-                MPSGraphTensor* zero =
-                    [ctx.graph constantWithScalar:0 dataType:MPSDataTypeInt32];
-                MPSGraphTensor* maxIdx =
-                    [ctx.graph constantWithScalar:(double)(dimSize - 1)
-                                        dataType:MPSDataTypeInt32];
+                MPSGraphTensor* zero = [ctx.graph constantWithScalar:0 dataType:MPSDataTypeInt32];
+                MPSGraphTensor* maxIdx = [ctx.graph constantWithScalar:(double)(dimSize - 1)
+                                                              dataType:MPSDataTypeInt32];
                 col = [ctx.graph clampWithTensor:col
-                                   minValueTensor:zero
-                                   maxValueTensor:maxIdx
-                                             name:nil];
+                                  minValueTensor:zero
+                                  maxValueTensor:maxIdx
+                                            name:nil];
 
-                MPSGraphTensor* strideT =
-                    [ctx.graph constantWithScalar:(double)strides[i]
-                                         dataType:MPSDataTypeInt32];
+                MPSGraphTensor* strideT = [ctx.graph constantWithScalar:(double)strides[i]
+                                                               dataType:MPSDataTypeInt32];
                 MPSGraphTensor* term = [ctx.graph multiplicationWithPrimaryTensor:col
                                                                   secondaryTensor:strideT
-                                                                            name:nil];
+                                                                             name:nil];
                 if (flatIndices == nil) {
                     flatIndices = term;
                 } else {
@@ -1158,9 +1147,7 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
             // leading batch dim so SafeGatherAlongAxis gets matching ranks.
             bool singlePoint = (flatIndices.shape.count == 0);
             if (singlePoint) {
-                flatIndices = [ctx.graph reshapeTensor:flatIndices
-                                             withShape:@[@1]
-                                                  name:nil];
+                flatIndices = [ctx.graph reshapeTensor:flatIndices withShape:@[@1] name:nil];
             }
 
             // MPS gatherAlongAxis requires updates and indices to have the same rank.
@@ -1202,11 +1189,11 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
                                                              withShape:unsqueezedShape
                                                                   name:nil];
             reshapedIndices = [ctx.graph broadcastTensor:reshapedIndices
-                                                toShape:gatherIndicesShape
-                                                   name:nil];
+                                                 toShape:gatherIndicesShape
+                                                    name:nil];
 
-            MPSGraphTensor* gathered = SafeGatherAlongAxis(ctx.graph, (NSInteger)gatherAxis,
-                                                           flatOperand, reshapedIndices);
+            MPSGraphTensor* gathered =
+                SafeGatherAlongAxis(ctx.graph, (NSInteger)gatherAxis, flatOperand, reshapedIndices);
 
             // If we flattened multi-dimensional batch indices, restore the batch dims.
             // gathered shape is [totalBatch, offset_dims...], reshape to
@@ -1240,8 +1227,8 @@ static ProcessResult HandleGather(HandlerContext& ctx) {
             NSUInteger outputRank = outputShape.count;
             // After squeezing single-point batch dim or unflattening,
             // numIndexDims reflects the actual index dims remaining in the gathered result.
-            NSUInteger numIndexDims = singlePoint ? 0 :
-                (flattenedBatch ? origBatchShape.count : flatIndices.shape.count);
+            NSUInteger numIndexDims =
+                singlePoint ? 0 : (flattenedBatch ? origBatchShape.count : flatIndices.shape.count);
             NSUInteger numOffsetDims = offsetDims.size();
 
             // Map output positions: offset dims go to specified positions,
@@ -1369,8 +1356,7 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
     auto updateWindowDimsForBatched = dimNumbers.getUpdateWindowDims();
     if (!inputBatchingDims.empty() && !scatterIndicesBatchingDims.empty() &&
         inputBatchingDims.size() == scatterIndicesBatchingDims.size() &&
-        scatterDimsToOperandDims.size() == 1 &&
-        indexVectorDim == (int64_t)indicesRank - 1 &&
+        scatterDimsToOperandDims.size() == 1 && indexVectorDim == (int64_t)indicesRank - 1 &&
         [indicesShape[indicesRank - 1] integerValue] == 1 &&
         (insertedWindowDims.size() == 1 ||
          (insertedWindowDims.empty() && updateWindowDimsForBatched.size() == 1))) {
@@ -1385,9 +1371,7 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
             for (NSUInteger i = 0; i < indicesRank - 1; i++) {
                 [squeezedShape addObject:indicesShape[i]];
             }
-            scatterIdx = [ctx.graph reshapeTensor:scatterIndices
-                                         withShape:squeezedShape
-                                              name:nil];
+            scatterIdx = [ctx.graph reshapeTensor:scatterIndices withShape:squeezedShape name:nil];
         } else {
             // Variant 2: indices [batch, 1], updates [batch, 1]
             // scatterAlongAxis needs indices to have same rank as input.
@@ -1409,7 +1393,8 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
         for (auto bd : scatterIndicesBatchingDims) {
             // Adjust for squeeze: if bd > indexVectorDim, subtract 1
             int64_t adjustedBd = bd;
-            if (bd > indexVectorDim) adjustedBd--;
+            if (bd > indexVectorDim)
+                adjustedBd--;
             idxBatchDimSet.insert(adjustedBd);
         }
 
@@ -1429,7 +1414,10 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
         for (NSUInteger d = 0; d < inputRank; d++) {
             bool isBatchDim = false;
             for (auto bd : inputBatchingDims) {
-                if ((NSUInteger)bd == d) { isBatchDim = true; break; }
+                if ((NSUInteger)bd == d) {
+                    isBatchDim = true;
+                    break;
+                }
             }
             if (isBatchDim) {
                 [idxExpandShape addObject:input.shape[d]];
@@ -1451,15 +1439,17 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
             NSMutableArray<NSNumber*>* expandedShape =
                 [NSMutableArray arrayWithArray:scatterUpdates.shape];
             [expandedShape insertObject:@1 atIndex:static_cast<NSUInteger>(scatterAxis)];
-            scatterUpdates =
-                [ctx.graph reshapeTensor:scatterUpdates withShape:expandedShape name:nil];
+            scatterUpdates = [ctx.graph reshapeTensor:scatterUpdates
+                                            withShape:expandedShape
+                                                 name:nil];
         }
         scatterUpdates = [ctx.graph broadcastTensor:scatterUpdates toShape:targetShape name:nil];
 
         MPSGraphScatterMode mode = GetScatterMode(scatterOp);
 
-        MPSGraphTensor* result = SafeScatterAlongAxis(
-            ctx.graph, static_cast<NSInteger>(scatterAxis), input, scatterUpdates, scatterIdx, mode);
+        MPSGraphTensor* result =
+            SafeScatterAlongAxis(ctx.graph, static_cast<NSInteger>(scatterAxis), input,
+                                 scatterUpdates, scatterIdx, mode);
         return Result(ctx, result, "scatter");
     }
 
@@ -1502,12 +1492,14 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
 
         // MPS scatter requires updates rank to match operand rank. When updates has higher
         // rank (e.g. batch of indices into embedding table: indices [B, S, 1] -> squeezed [B, S],
-        // updates [B, S, D] into operand [V, D]), flatten the batch dimensions so MPS can handle it.
+        // updates [B, S, D] into operand [V, D]), flatten the batch dimensions so MPS can handle
+        // it.
         if (updates.shape.count > input.shape.count) {
             // The extra dimensions in updates/indices are batch dims that need flattening.
             // updates: [batch..., window_dims...] -> [flat_batch, window_dims...]
             // indices: [batch...] -> [flat_batch]
-            NSUInteger numBatchDims = updates.shape.count - (input.shape.count - insertedWindowDims.size());
+            NSUInteger numBatchDims =
+                updates.shape.count - (input.shape.count - insertedWindowDims.size());
             if (numBatchDims > 0 && squeezedIndices.shape.count == numBatchDims) {
                 // Flatten all batch dims into one
                 NSInteger flatBatch = 1;
@@ -1517,8 +1509,8 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
 
                 // Flatten indices: [B1, B2, ...] -> [flat]
                 squeezedIndices = [ctx.graph reshapeTensor:squeezedIndices
-                                                withShape:@[@(flatBatch)]
-                                                     name:nil];
+                                                 withShape:@[@(flatBatch)]
+                                                      name:nil];
 
                 // Flatten updates: [B1, B2, ..., D1, D2, ...] -> [flat, D1, D2, ...]
                 NSMutableArray<NSNumber*>* flatUpdatesShape = [NSMutableArray array];
@@ -1622,7 +1614,7 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
         // update_window_dims tells us which update dims are window dims.
         // The window shape comes from the update's window dims.
         llvm::SmallVector<int64_t> realScatterDims;  // operand dims with point scatter
-        llvm::SmallVector<size_t> realIndexColumns;   // index columns for real dims
+        llvm::SmallVector<size_t> realIndexColumns;  // index columns for real dims
         bool allPassthroughsAreFull = true;
 
         for (size_t i = 0; i < scatterDimsToOperandDims.size(); ++i) {
@@ -1638,15 +1630,16 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
             // Since inserted_window_dims is empty, all operand dims appear as window dims
             // in the same order. So the window size for operandDim is the update size
             // at the corresponding window dim position.
-            if ((size_t)operandDim < updateWindowDimsSlice.size() + scatterDimsToOperandDims.size()) {
+            if ((size_t)operandDim <
+                updateWindowDimsSlice.size() + scatterDimsToOperandDims.size()) {
                 // Find which window dim corresponds to this operand dim
                 for (size_t w = 0; w < updateWindowDimsSlice.size(); ++w) {
                     // The w-th window dim corresponds to the w-th operand dim
                     // (since no dims are inserted/collapsed)
                     if ((int64_t)w == operandDim) {
                         int64_t updateDim = updateWindowDimsSlice[w];
-                        auto updatesType = mlir::cast<mlir::RankedTensorType>(
-                            ctx.op->getOperand(2).getType());
+                        auto updatesType =
+                            mlir::cast<mlir::RankedTensorType>(ctx.op->getOperand(2).getType());
                         windowSize = updatesType.getShape()[updateDim];
                         break;
                     }
@@ -1694,7 +1687,8 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
                     [squeezedShape addObject:indexCol_t.shape[d]];
                 }
             }
-            if (squeezedShape.count == 0) [squeezedShape addObject:@1];
+            if (squeezedShape.count == 0)
+                [squeezedShape addObject:@1];
             indexCol_t = [ctx.graph reshapeTensor:indexCol_t withShape:squeezedShape name:nil];
             indexCol_t = EnsureInt32(ctx.graph, indexCol_t);
 
@@ -1702,8 +1696,7 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
             // updates shape: [N, 1, 4] -> need [N, 4] for scatter along axis 0
             // Remove the size-1 window dim corresponding to the scatter axis
             NSMutableArray<NSNumber*>* reshapedUpdatesShape = [NSMutableArray array];
-            auto updatesType = mlir::cast<mlir::RankedTensorType>(
-                ctx.op->getOperand(2).getType());
+            auto updatesType = mlir::cast<mlir::RankedTensorType>(ctx.op->getOperand(2).getType());
             auto updatesShape = updatesType.getShape();
 
             // Build new shape: keep scatter dims (non-window) and window dims
@@ -1737,15 +1730,15 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
                     [NSMutableArray arrayWithArray:reshapedUpdates.shape];
                 [fixedShape insertObject:@1 atIndex:static_cast<NSUInteger>(scatterAxis)];
                 reshapedUpdates = [ctx.graph reshapeTensor:reshapedUpdates
-                                                  withShape:fixedShape
-                                                       name:nil];
+                                                 withShape:fixedShape
+                                                      name:nil];
             }
 
             // When updates rank > input rank (batch dims from scatter points), flatten
             // the scatter batch dims so updates matches input rank.
             if (reshapedUpdates.shape.count > inputRank) {
-                // Flatten scatter batch dims: updates [B1, B2, ..., W1, W2, ...] -> [B1*B2*..., W1, W2, ...]
-                // The first (updatesRank - inputRank + 1) dims become one flat dim
+                // Flatten scatter batch dims: updates [B1, B2, ..., W1, W2, ...] -> [B1*B2*..., W1,
+                // W2, ...] The first (updatesRank - inputRank + 1) dims become one flat dim
                 NSUInteger numBatchDims = reshapedUpdates.shape.count - inputRank + 1;
                 int64_t flatBatch = 1;
                 for (NSUInteger d = 0; d < numBatchDims; ++d) {
@@ -1757,17 +1750,15 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
                     [flatUpdatesShape addObject:reshapedUpdates.shape[d]];
                 }
                 reshapedUpdates = [ctx.graph reshapeTensor:reshapedUpdates
-                                                  withShape:flatUpdatesShape
-                                                       name:nil];
+                                                 withShape:flatUpdatesShape
+                                                      name:nil];
 
                 // Flatten indices similarly
                 int64_t flatIdx = 1;
                 for (NSUInteger d = 0; d < indexCol_t.shape.count; ++d) {
                     flatIdx *= [indexCol_t.shape[d] integerValue];
                 }
-                indexCol_t = [ctx.graph reshapeTensor:indexCol_t
-                                             withShape:@[@(flatIdx)]
-                                                  name:nil];
+                indexCol_t = [ctx.graph reshapeTensor:indexCol_t withShape:@[@(flatIdx)] name:nil];
             }
 
             // scatterAlongAxis requires indices to have the same shape as updates.
@@ -1778,17 +1769,19 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
                 while (expandedIdxShape.count < reshapedUpdates.shape.count) {
                     [expandedIdxShape addObject:@1];
                 }
-                indexCol_t = [ctx.graph reshapeTensor:indexCol_t withShape:expandedIdxShape name:nil];
+                indexCol_t = [ctx.graph reshapeTensor:indexCol_t
+                                            withShape:expandedIdxShape
+                                                 name:nil];
             }
             // Broadcast indices to match updates shape
             indexCol_t = [ctx.graph broadcastTensor:indexCol_t
-                                           toShape:reshapedUpdates.shape
-                                              name:nil];
+                                            toShape:reshapedUpdates.shape
+                                               name:nil];
 
             MPSGraphScatterMode mode = GetScatterMode(scatterOp);
-            MPSGraphTensor* result = SafeScatterAlongAxis(
-                ctx.graph, static_cast<NSInteger>(scatterAxis), input,
-                reshapedUpdates, indexCol_t, mode);
+            MPSGraphTensor* result =
+                SafeScatterAlongAxis(ctx.graph, static_cast<NSInteger>(scatterAxis), input,
+                                     reshapedUpdates, indexCol_t, mode);
             return Result(ctx, result, "scatter");
         }
     }
@@ -1844,7 +1837,8 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
                         // For set mode, just return updates reshaped to input
                         NSArray<NSNumber*>* outputShape = GetOutputShape(ctx.op);
                         MPSGraphTensor* result = [ctx.graph reshapeTensor:updates
-                                                               withShape:outputShape name:nil];
+                                                                withShape:outputShape
+                                                                     name:nil];
                         return Result(ctx, result, "scatter");
                     }
 
@@ -1853,9 +1847,11 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
                     MPSGraphTensor* idx = scatterIndices;
                     idx = [ctx.graph reshapeTensor:idx withShape:@[@(K)] name:nil];
                     // Slice out the single index value
-                    idx = [ctx.graph sliceTensor:idx dimension:0
-                                          start:(NSInteger)realScatterIdx
-                                         length:1 name:nil];
+                    idx = [ctx.graph sliceTensor:idx
+                                       dimension:0
+                                           start:(NSInteger)realScatterIdx
+                                          length:1
+                                            name:nil];
                     idx = EnsureInt32(ctx.graph, idx);
 
                     // Build sequential indices: start_idx + 0, start_idx + 1, ...
@@ -1863,24 +1859,23 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
                     // [start, start+1, ..., start+winSize-1] along the scatter dim.
                     int64_t winSize = [updates.shape[(NSUInteger)realScatterDim] integerValue];
                     std::vector<int32_t> offsetBuf(winSize);
-                    for (int64_t i = 0; i < winSize; i++) offsetBuf[i] = (int32_t)i;
+                    for (int64_t i = 0; i < winSize; i++)
+                        offsetBuf[i] = (int32_t)i;
                     NSData* offsetData = [NSData dataWithBytes:offsetBuf.data()
                                                         length:winSize * sizeof(int32_t)];
-                    MPSGraphTensor* offsets =
-                        [ctx.graph constantWithData:offsetData
-                                              shape:@[@(winSize)]
-                                           dataType:MPSDataTypeInt32];
+                    MPSGraphTensor* offsets = [ctx.graph constantWithData:offsetData
+                                                                    shape:@[@(winSize)]
+                                                                 dataType:MPSDataTypeInt32];
                     // idx is [1], offsets is [winSize] → add gives [winSize]
                     idx = [ctx.graph additionWithPrimaryTensor:idx
-                                              secondaryTensor:offsets
-                                                         name:nil];
+                                               secondaryTensor:offsets
+                                                          name:nil];
 
                     // Reshape index to match updates shape for scatter_along_axis:
                     // updates is [d0, d1, ..., dk] and we scatter along realScatterDim
                     NSMutableArray<NSNumber*>* idxShape = [NSMutableArray array];
                     for (NSUInteger d = 0; d < updatesRank; d++) {
-                        [idxShape addObject:((int64_t)d == realScatterDim) ?
-                            updates.shape[d] : @1];
+                        [idxShape addObject:((int64_t)d == realScatterDim) ? updates.shape[d] : @1];
                     }
                     idx = [ctx.graph reshapeTensor:idx withShape:idxShape name:nil];
                     idx = [ctx.graph broadcastTensor:idx toShape:updates.shape name:nil];
@@ -1971,10 +1966,9 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
             // then remaining (window) dims.
             NSUInteger operandRank = input.shape.count;
             llvm::SmallVector<int64_t> sortedScatter(scatterDimsToOperandDims.begin(),
-                                                      scatterDimsToOperandDims.end());
+                                                     scatterDimsToOperandDims.end());
             llvm::sort(sortedScatter);
-            llvm::SmallDenseSet<int64_t, 8> scatterSet(sortedScatter.begin(),
-                                                        sortedScatter.end());
+            llvm::SmallDenseSet<int64_t, 8> scatterSet(sortedScatter.begin(), sortedScatter.end());
 
             llvm::SmallVector<int64_t> perm;
             // Batch dims first (dims before min scatter dim)
@@ -2004,9 +1998,7 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
             }
 
             // Transpose input
-            input = [ctx.graph transposeTensor:input
-                                  permutation:scatterTransposePerm
-                                         name:nil];
+            input = [ctx.graph transposeTensor:input permutation:scatterTransposePerm name:nil];
 
             // Remap scatterDimsToOperandDims and insertedWindowDims.
             // Build old→new dim mapping from perm.
@@ -2023,7 +2015,7 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
             scatterDimsToOperandDims = remappedScatterDims;
 
             llvm::SmallVector<int64_t> remappedInserted(insertedWindowDims.begin(),
-                                                         insertedWindowDims.end());
+                                                        insertedWindowDims.end());
             for (size_t i = 0; i < remappedInserted.size(); ++i) {
                 remappedInserted[i] = dimRemap[remappedInserted[i]];
             }
@@ -2078,18 +2070,17 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
                         int64_t dimSize = [input.shape[dim] integerValue];
                         int64_t updateSize = [updShape[dim] integerValue];
                         int64_t maxStart = dimSize - updateSize;
-                        if (maxStart < 0) maxStart = 0;
+                        if (maxStart < 0)
+                            maxStart = 0;
 
-                        MPSGraphTensor* zero =
-                            [ctx.graph constantWithScalar:0
-                                                dataType:MPSDataTypeInt32];
-                        MPSGraphTensor* maxVal =
-                            [ctx.graph constantWithScalar:maxStart
-                                                dataType:MPSDataTypeInt32];
+                        MPSGraphTensor* zero = [ctx.graph constantWithScalar:0
+                                                                    dataType:MPSDataTypeInt32];
+                        MPSGraphTensor* maxVal = [ctx.graph constantWithScalar:maxStart
+                                                                      dataType:MPSDataTypeInt32];
                         startIdx = [ctx.graph clampWithTensor:startIdx
-                                             minValueTensor:zero
-                                             maxValueTensor:maxVal
-                                                       name:nil];
+                                               minValueTensor:zero
+                                               maxValueTensor:maxVal
+                                                         name:nil];
 
                         coords = [ctx.graph additionWithPrimaryTensor:coords
                                                       secondaryTensor:startIdx
@@ -2102,18 +2093,14 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
             }
 
             // Stack to form [update_shape..., rank] indices
-            MPSGraphTensor* fullIndices =
-                [ctx.graph stackTensors:indexTensors
-                                  axis:(NSInteger)updRank
-                                  name:nil];
+            MPSGraphTensor* fullIndices = [ctx.graph stackTensors:indexTensors
+                                                             axis:(NSInteger)updRank
+                                                             name:nil];
 
             MPSGraphScatterMode mode = GetScatterMode(scatterOp);
-            MPSGraphTensor* result =
-                SafeScatterND(ctx.graph, input, updates, fullIndices, 0, mode);
+            MPSGraphTensor* result = SafeScatterND(ctx.graph, input, updates, fullIndices, 0, mode);
             if (scatterInversePerm) {
-                result = [ctx.graph transposeTensor:result
-                                        permutation:scatterInversePerm
-                                               name:nil];
+                result = [ctx.graph transposeTensor:result permutation:scatterInversePerm name:nil];
             }
             return Result(ctx, result, "scatter");
         }
@@ -2122,8 +2109,7 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
         // the update window covers the remaining dims.  Reshape the updates to
         // full operand rank by inserting size-1 dims for each insertedWindowDim,
         // then fall through to the DUS-style coordinate scatter.
-        if (!insertedWindowDims.empty() &&
-            insertedWindowDims.size() < (size_t)K &&
+        if (!insertedWindowDims.empty() && insertedWindowDims.size() < (size_t)K &&
             updateWindowDims.size() + insertedWindowDims.size() ==
                 updates.shape.count + insertedWindowDims.size()) {
             // Build the full-rank update shape: for each operand dim,
@@ -2131,7 +2117,7 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
             // window dim size from the update tensor.
             NSUInteger operandRank = input.shape.count;
             llvm::SmallDenseSet<int64_t, 8> insertedSet(insertedWindowDims.begin(),
-                                                         insertedWindowDims.end());
+                                                        insertedWindowDims.end());
 
             NSMutableArray<NSNumber*>* fullShape = [NSMutableArray array];
             NSUInteger windowIdx = 0;
@@ -2146,8 +2132,9 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
                 }
             }
 
-            MPSGraphTensor* reshapedUpdates =
-                [ctx.graph reshapeTensor:updates withShape:fullShape name:nil];
+            MPSGraphTensor* reshapedUpdates = [ctx.graph reshapeTensor:updates
+                                                             withShape:fullShape
+                                                                  name:nil];
 
             // Now use the DUS-style coordinate scatter approach.
             NSUInteger updRank = reshapedUpdates.shape.count;
@@ -2181,18 +2168,17 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
                         int64_t dimSize = [input.shape[dim] integerValue];
                         int64_t updateSize = [updShape[dim] integerValue];
                         int64_t maxStart = dimSize - updateSize;
-                        if (maxStart < 0) maxStart = 0;
+                        if (maxStart < 0)
+                            maxStart = 0;
 
-                        MPSGraphTensor* zero =
-                            [ctx.graph constantWithScalar:0
-                                                dataType:MPSDataTypeInt32];
-                        MPSGraphTensor* maxVal =
-                            [ctx.graph constantWithScalar:maxStart
-                                                dataType:MPSDataTypeInt32];
+                        MPSGraphTensor* zero = [ctx.graph constantWithScalar:0
+                                                                    dataType:MPSDataTypeInt32];
+                        MPSGraphTensor* maxVal = [ctx.graph constantWithScalar:maxStart
+                                                                      dataType:MPSDataTypeInt32];
                         startIdx = [ctx.graph clampWithTensor:startIdx
-                                             minValueTensor:zero
-                                             maxValueTensor:maxVal
-                                                       name:nil];
+                                               minValueTensor:zero
+                                               maxValueTensor:maxVal
+                                                         name:nil];
 
                         coords = [ctx.graph additionWithPrimaryTensor:coords
                                                       secondaryTensor:startIdx
@@ -2204,18 +2190,15 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
                 [indexTensors addObject:coords];
             }
 
-            MPSGraphTensor* fullIndices =
-                [ctx.graph stackTensors:indexTensors
-                                  axis:(NSInteger)updRank
-                                  name:nil];
+            MPSGraphTensor* fullIndices = [ctx.graph stackTensors:indexTensors
+                                                             axis:(NSInteger)updRank
+                                                             name:nil];
 
             MPSGraphScatterMode mode = GetScatterMode(scatterOp);
             MPSGraphTensor* result =
                 SafeScatterND(ctx.graph, input, reshapedUpdates, fullIndices, 0, mode);
             if (scatterInversePerm) {
-                result = [ctx.graph transposeTensor:result
-                                        permutation:scatterInversePerm
-                                               name:nil];
+                result = [ctx.graph transposeTensor:result permutation:scatterInversePerm name:nil];
             }
             return Result(ctx, result, "scatter");
         }
@@ -2336,9 +2319,7 @@ static ProcessResult HandleScatter(HandlerContext& ctx) {
         MPSGraphTensor* result =
             SafeScatterND(ctx.graph, input, ndUpdates, ndIndices, mpsBatchDims, mode);
         if (scatterInversePerm) {
-            result = [ctx.graph transposeTensor:result
-                                    permutation:scatterInversePerm
-                                           name:nil];
+            result = [ctx.graph transposeTensor:result permutation:scatterInversePerm name:nil];
         }
         return Result(ctx, result, "scatter");
     }

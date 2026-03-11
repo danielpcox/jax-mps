@@ -331,8 +331,8 @@ static ProcessResult HandleReducePrecision(HandlerContext& ctx) {
     // NaN's mantissa into the exponent/sign) and exponent clamping.
     MPSGraphTensor* magMask = [g constantWithScalar:0x7FFFFFFF dataType:MPSDataTypeInt32];
     MPSGraphTensor* inputMagnitude = [g bitwiseANDWithPrimaryTensor:bits
-                                                     secondaryTensor:magMask
-                                                                name:nil];
+                                                    secondaryTensor:magMask
+                                                               name:nil];
     MPSGraphTensor* infBits = [g constantWithScalar:0x7F800000 dataType:MPSDataTypeInt32];
     MPSGraphTensor* isNaN = [g greaterThanWithPrimaryTensor:inputMagnitude
                                             secondaryTensor:infBits
@@ -351,9 +351,9 @@ static ProcessResult HandleReducePrecision(HandlerContext& ctx) {
                                                         secondaryTensor:shiftConst
                                                                    name:nil];
         MPSGraphTensor* lsb = [g bitwiseANDWithPrimaryTensor:shifted
-                                              secondaryTensor:[g constantWithScalar:1
-                                                                           dataType:MPSDataTypeInt32]
-                                                         name:nil];
+                                             secondaryTensor:[g constantWithScalar:1
+                                                                          dataType:MPSDataTypeInt32]
+                                                        name:nil];
         int base_bias = (1 << (shift - 1)) - 1;
         MPSGraphTensor* baseBias = [g constantWithScalar:base_bias dataType:MPSDataTypeInt32];
         MPSGraphTensor* roundingBias = [g additionWithPrimaryTensor:baseBias
@@ -410,25 +410,24 @@ static ProcessResult HandleReducePrecision(HandlerContext& ctx) {
 
         // Underflow: 0 < magnitude < min → set to 0
         MPSGraphTensor* zero = [g constantWithScalar:0 dataType:MPSDataTypeInt32];
-        MPSGraphTensor* isNonZeroUnderflow = [g logicalANDWithPrimaryTensor:
-                                                [g greaterThanWithPrimaryTensor:magnitude
-                                                                secondaryTensor:zero
-                                                                           name:nil]
-                                                            secondaryTensor:
-                                                [g lessThanWithPrimaryTensor:magnitude
-                                                                secondaryTensor:minMag
-                                                                           name:nil]
-                                                                       name:nil];
+        MPSGraphTensor* isNonZeroUnderflow =
+            [g logicalANDWithPrimaryTensor:[g greaterThanWithPrimaryTensor:magnitude
+                                                           secondaryTensor:zero
+                                                                      name:nil]
+                           secondaryTensor:[g lessThanWithPrimaryTensor:magnitude
+                                                        secondaryTensor:minMag
+                                                                   name:nil]
+                                      name:nil];
 
         // Apply: overflow → inf, underflow → 0, else magnitude
         magnitude = [g selectWithPredicateTensor:isOverflow
-                              truePredicateTensor:inf
-                             falsePredicateTensor:magnitude
-                                             name:nil];
+                             truePredicateTensor:inf
+                            falsePredicateTensor:magnitude
+                                            name:nil];
         magnitude = [g selectWithPredicateTensor:isNonZeroUnderflow
-                              truePredicateTensor:zero
-                             falsePredicateTensor:magnitude
-                                             name:nil];
+                             truePredicateTensor:zero
+                            falsePredicateTensor:magnitude
+                                            name:nil];
 
         // Recombine sign and magnitude
         bits = [g bitwiseORWithPrimaryTensor:signBit secondaryTensor:magnitude name:nil];
@@ -438,9 +437,9 @@ static ProcessResult HandleReducePrecision(HandlerContext& ctx) {
     // This handles both mantissa rounding overflow (e.g., mantissa_bits=0 can overflow
     // NaN's mantissa into sign bit) and exponent clamping (NaN exponent > max).
     bits = [g selectWithPredicateTensor:isNaN
-                      truePredicateTensor:originalBits
-                     falsePredicateTensor:bits
-                                     name:nil];
+                    truePredicateTensor:originalBits
+                   falsePredicateTensor:bits
+                                   name:nil];
 
     // Step 5: Bitcast int32 → float32
     MPSGraphTensor* result = [g reinterpretCastTensor:bits toType:MPSDataTypeFloat32 name:nil];

@@ -21,7 +21,9 @@ def _random_complex_posdef(key, n: int, batch_shape: tuple[int, ...] = ()):
     shape = (*batch_shape, n, n)
     k1, k2 = random.split(key)
     A = random.normal(k1, shape) + 1j * random.normal(k2, shape)
-    result = jnp.einsum("...ij,...kj->...ik", A, A.conj()) + n * jnp.eye(n, dtype=jnp.float32)
+    result = jnp.einsum("...ij,...kj->...ik", A, A.conj()) + n * jnp.eye(
+        n, dtype=jnp.float32
+    )
     return result
 
 
@@ -250,9 +252,7 @@ def make_linalg_op_configs():
         for n in [2, 3, 4]:
             yield OperationTestConfig(
                 jnp.linalg.inv,
-                lambda key, n=n: (
-                    lambda A: A @ A.conj().T + n * jnp.eye(n)
-                )(
+                lambda key, n=n: (lambda A: A @ A.conj().T + n * jnp.eye(n))(
                     random.normal(key, (n, n))
                     + 1j * random.normal(random.fold_in(key, 1), (n, n))
                 ),
@@ -263,9 +263,7 @@ def make_linalg_op_configs():
         # Complex solve
         yield OperationTestConfig(
             jnp.linalg.solve,
-            lambda key: (
-                lambda A: A @ A.conj().T + 3 * jnp.eye(3)
-            )(
+            lambda key: (lambda A: A @ A.conj().T + 3 * jnp.eye(3))(
                 random.normal(key, (3, 3))
                 + 1j * random.normal(random.fold_in(key, 1), (3, 3))
             ),
@@ -293,9 +291,7 @@ def make_linalg_op_configs():
         for n in [2, 3, 4]:
             yield OperationTestConfig(
                 jnp.linalg.cholesky,
-                lambda key, n=n: (
-                    lambda A: A @ A.conj().T + n * jnp.eye(n)
-                )(
+                lambda key, n=n: (lambda A: A @ A.conj().T + n * jnp.eye(n))(
                     random.normal(key, (n, n))
                     + 1j * random.normal(random.fold_in(key, 1), (n, n))
                 ),
@@ -675,9 +671,9 @@ def make_linalg_op_configs():
         # (Schur form is not unique - eigenvalue ordering may differ between backends)
         for n in [2, 3, 4]:
             yield OperationTestConfig(
-                lambda x: (
-                    lambda TQ: TQ[1] @ TQ[0] @ TQ[1].conj().T
-                )(jax.scipy.linalg.schur(x)),
+                lambda x: (lambda TQ: TQ[1] @ TQ[0] @ TQ[1].conj().T)(
+                    jax.scipy.linalg.schur(x)
+                ),
                 lambda key, n=n: (
                     random.normal(key, (n, n))
                     + 1j * random.normal(random.split(key)[0], (n, n))
